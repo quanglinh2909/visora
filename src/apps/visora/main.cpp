@@ -21,6 +21,8 @@
 #include "hal/Capabilities.hpp"
 #include "media/camera/CameraService.hpp"
 #include "media/gst/CodecProvider.hpp"
+#include "media/stream/RtspServer.hpp"
+#include "media/stream/StreamManager.hpp"
 #include "store/InMemoryCameraRepository.hpp"
 #include "store/PostgresCameraRepository.hpp"
 
@@ -113,20 +115,63 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        // Events are wired as callbacks so the dependency points one way: the
-        // camera domain does not know a streaming layer exists.
+        auto rtspServer = std::make_shared<media::RtspServer>(
+            config.value().stream.rtspHost, config.value().stream.rtspPort);
+        const core::Status rtspStarted = rtspServer->start();
+        if (!rtspStarted.ok()) {
+            VS_ERROR(kCategory) << rtspStarted.error().str();
+            oatpp::base::Environment::destroy();
+            return 1;
+        }
+
+        media::StreamManagerConfig streamConfig;
+        streamConfig.publicHost = config.value().stream.publicRtspHost;
+        streamConfig.rtspPort = rtspServer->boundPort();
+        streamConfig.sourceLatencyMs = config.value().stream.sourceLatencyMs;
+        streamConfig.retry.initialMs = config.value().stream.retryInitialMs;
+        streamConfig.retry.maxMs = config.value().stream.retryMaxMs;
+
+        // The service is captured weakly on purpose: the manager's worker
+        // thread outlives nothing here, but a strong reference would make the
+        // two own each other and neither would ever be destroyed.
+        std::weak_ptr<media::CameraService> cameraServiceWeak;
+        auto streams = std::make_shared<media::StreamManager>(
+            streamConfig, rtspServer,
+            [&cameraServiceWeak](const std::string& cameraId,
+                                 const media::StreamStatus& status) {
+                if (auto service = cameraServiceWeak.lock()) {
+                    // Runtime state goes back to the row, so a restart resumes
+                    // with what was true rather than with 'offline' for every
+                    // camera.
+                    service->reportRuntime(cameraId, status.state, status.codec,
+                                           status.outputRtsp, status.retryCount,
+                                           status.lastError);
+                }
+            });
+
+        // Events are callbacks so the dependency points one way: the camera
+        // domain does not know a streaming layer exists.
         media::CameraEvents events;
-        events.added = [](const media::Camera& camera) {
-            VS_DEBUG(kCategory) << "camera added: " << camera.id;
+        events.added = [streams](const media::Camera& camera) { streams->apply(camera); };
+        events.changed = [streams](const media::Camera& camera, const media::CameraDiff& diff) {
+            // Only a change the pipeline cares about reaches the manager, and
+            // the manager itself ignores one whose source did not move — so a
+            // rename never drops a viewer.
+            if (diff.sourceChanged || diff.recordingChanged) streams->apply(camera);
         };
-        events.changed = [](const media::Camera& camera, const media::CameraDiff&) {
-            VS_DEBUG(kCategory) << "camera changed: " << camera.id;
-        };
-        events.removed = [](const std::string& id) {
-            VS_DEBUG(kCategory) << "camera removed: " << id;
-        };
+        events.removed = [streams](const std::string& id) { streams->remove(id); };
 
         auto cameras = std::make_shared<media::CameraService>(repository, std::move(events));
+        cameraServiceWeak = cameras;
+
+        streams->start();
+
+        // Everything already in the database starts streaming without waiting
+        // for someone to touch the API.
+        if (auto existing = cameras->list()) {
+            for (const media::Camera& camera : existing.value()) streams->apply(camera);
+            VS_INFO(kCategory) << "restored " << existing.value().size() << " camera(s)";
+        }
 
         auto objectMapper = oatpp::parser::json::mapping::ObjectMapper::createShared();
         // Absent fields must stay absent, not become nulls: a partial update
@@ -177,6 +222,10 @@ int main(int argc, char** argv) {
         VS_INFO(kCategory) << "shutting down";
         g_server.reset();
         connectionHandler->stop();
+        // Streams first: their worker touches the camera service, which the
+        // repository outlives only until this scope ends.
+        streams->stop();
+        rtspServer->stop();
     }
     oatpp::base::Environment::destroy();
     return exitCode;

@@ -5,6 +5,9 @@
 # most of this layer is exercised on a machine with no plugins installed.
 pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET
     gstreamer-1.0
+    gstreamer-rtsp-1.0
+    gstreamer-rtsp-server-1.0
+    gstreamer-app-1.0
 )
 
 add_library(visora_media STATIC
@@ -16,6 +19,10 @@ add_library(visora_media STATIC
     pipeline/CameraPipelines.cpp
     camera/Camera.cpp
     camera/CameraService.cpp
+    stream/CodecProbe.cpp
+    stream/RtspServer.cpp
+    stream/StreamManager.cpp
+    stream/RetryPolicy.cpp
 )
 add_library(visora::media ALIAS visora_media)
 

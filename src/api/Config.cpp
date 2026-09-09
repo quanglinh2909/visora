@@ -17,6 +17,30 @@ constexpr const char* kCategory = "config";
 // Structured bindings are avoided in these loops: gcc 11 treats the bound name
 // as dependent and refuses `value.retrieve<T>()` without a `template` keyword,
 // which is more confusing to read than a plain pair access.
+const oatpp::Any* find(const oatpp::Fields<oatpp::Any>& fields, const char* name) {
+    if (!fields) return nullptr;
+    for (auto it = fields->begin(); it != fields->end(); ++it) {
+        const oatpp::String& key = it->first;
+        if (key && *key == name && it->second) return &it->second;
+    }
+    return nullptr;
+}
+
+// Any::retrieve() THROWS when the stored type differs from the requested one,
+// and which numeric type a JSON number lands in is not something a config file
+// author can be expected to control. Reading `"port": 8019` as Int32 aborted the
+// process at startup before this was wrapped — a config file crashing the
+// server is about the worst failure mode a config file can have.
+template <class Wrapper>
+bool tryRetrieve(const oatpp::Any& value, Wrapper& out) {
+    try {
+        out = value.retrieve<Wrapper>();
+        return static_cast<bool>(out);
+    } catch (const std::runtime_error&) {
+        return false;
+    }
+}
+
 const oatpp::Fields<oatpp::Any>* section(const oatpp::Fields<oatpp::Any>& root,
                                          const char* name,
                                          oatpp::Fields<oatpp::Any>& storage) {
@@ -24,36 +48,57 @@ const oatpp::Fields<oatpp::Any>* section(const oatpp::Fields<oatpp::Any>& root,
         const oatpp::String& key = it->first;
         const oatpp::Any& value = it->second;
         if (key && *key == name && value) {
-            storage = value.retrieve<oatpp::Fields<oatpp::Any>>();
-            if (storage) return &storage;
+            if (tryRetrieve(value, storage)) return &storage;
         }
     }
     return nullptr;
 }
 
-template <class Wrapper>
-bool read(const oatpp::Fields<oatpp::Any>& fields, const char* name, Wrapper& out) {
-    if (!fields) return false;
-    for (auto it = fields->begin(); it != fields->end(); ++it) {
-        const oatpp::String& key = it->first;
-        const oatpp::Any& value = it->second;
-        if (key && *key == name && value) {
-            out = value.retrieve<Wrapper>();
-            return static_cast<bool>(out);
-        }
-    }
-    return false;
-}
-
 void readString(const oatpp::Fields<oatpp::Any>& fields, const char* name, std::string& out) {
-    oatpp::String value;
-    if (read(fields, name, value)) out = *value;
+    const oatpp::Any* value = find(fields, name);
+    if (value == nullptr) return;
+    oatpp::String text;
+    if (tryRetrieve(*value, text)) out = *text;
 }
 
+// Accepts whichever numeric type the parser chose.
 template <class T>
 void readInt(const oatpp::Fields<oatpp::Any>& fields, const char* name, T& out) {
-    oatpp::Int32 value;
-    if (read(fields, name, value)) out = static_cast<T>(*value);
+    const oatpp::Any* value = find(fields, name);
+    if (value == nullptr) return;
+
+    oatpp::Int32 asInt32;
+    if (tryRetrieve(*value, asInt32)) {
+        out = static_cast<T>(*asInt32);
+        return;
+    }
+    oatpp::Int64 asInt64;
+    if (tryRetrieve(*value, asInt64)) {
+        out = static_cast<T>(*asInt64);
+        return;
+    }
+    // UInt64 first among the unsigned types: it is what oatpp's JSON parser
+    // actually produces for a positive integer literal, which cost a startup
+    // failure to discover.
+    oatpp::UInt64 asUInt64;
+    if (tryRetrieve(*value, asUInt64)) {
+        out = static_cast<T>(*asUInt64);
+        return;
+    }
+    oatpp::UInt32 asUInt32;
+    if (tryRetrieve(*value, asUInt32)) {
+        out = static_cast<T>(*asUInt32);
+        return;
+    }
+    oatpp::Float64 asFloat;
+    if (tryRetrieve(*value, asFloat)) {
+        out = static_cast<T>(*asFloat);
+        return;
+    }
+    const oatpp::Type* stored = value->getStoredType();
+    VS_WARN(kCategory) << "config value '" << name << "' is not a number (stored as "
+                       << (stored != nullptr ? stored->classId.name : "nothing")
+                       << "); keeping the default";
 }
 
 }  // namespace

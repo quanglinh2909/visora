@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "media/pipeline/CameraPipelines.hpp"
+#include "media/stream/RetryPolicy.hpp"
 
 using namespace visora::media;
 
@@ -223,6 +224,45 @@ VS_TEST(gstreamer_parses_what_we_build) {
 
 VS_TEST(the_mount_path_is_unchanged) {
     VS_CHECK(mountPath("cam-1") == "/cameras/cam-1");
+}
+
+// --- reconnect backoff -------------------------------------------------------
+//
+// Pure arithmetic, so the curve is asserted rather than observed. The
+// predecessor's equivalent could only be checked by unplugging a camera and
+// watching a log.
+
+VS_TEST(backoff_doubles_then_stops_at_the_ceiling) {
+    RetryPolicy policy;
+    policy.initialMs = 1000;
+    policy.maxMs = 30000;
+
+    VS_CHECK_EQ(policy.delayFor(0), 1000u);
+    VS_CHECK_EQ(policy.delayFor(1), 2000u);
+    VS_CHECK_EQ(policy.delayFor(2), 4000u);
+    VS_CHECK_EQ(policy.delayFor(3), 8000u);
+    VS_CHECK_EQ(policy.delayFor(4), 16000u);
+    VS_CHECK_EQ(policy.delayFor(5), 30000u);   // clamped
+    VS_CHECK_EQ(policy.delayFor(50), 30000u);  // stays clamped
+}
+
+VS_TEST(a_very_large_attempt_count_cannot_overflow) {
+    // A camera unreachable for days reaches a large attempt count. Computing
+    // the delay by exponentiation and clamping afterwards would wrap round to a
+    // tiny value and turn the backoff into a hot loop against a dead device.
+    RetryPolicy policy;
+    policy.initialMs = 1000;
+    policy.maxMs = 30000;
+    for (std::uint32_t attempt : {100u, 1000u, 100000u}) {
+        VS_CHECK_EQ(policy.delayFor(attempt), 30000u);
+    }
+}
+
+VS_TEST(a_ceiling_below_the_first_delay_is_honoured) {
+    RetryPolicy policy;
+    policy.initialMs = 5000;
+    policy.maxMs = 1000;
+    VS_CHECK_EQ(policy.delayFor(0), 1000u);
 }
 
 VS_MAIN()
