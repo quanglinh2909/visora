@@ -19,101 +19,15 @@
 #include "core/ImageMath.hpp"
 #include "core/Log.hpp"
 #include "vision/ModelType.hpp"
+#include "vision/models/YoloCommon.hpp"
 
 namespace visora::vision {
 namespace {
 
 constexpr const char* kCategory = "vision";
 
-// The head splits into a box branch and a score branch per scale, so a YOLOv8
-// export has outputs in multiples of two (three scales = six tensors), or three
-// when it also emits a per-anchor score sum.
-constexpr int kBoxSides = 4;
-
-float dequantise(std::int8_t raw, const hal::Quantisation& quant) {
-    return (static_cast<float>(raw) - static_cast<float>(quant.zeroPoint)) * quant.scale;
-}
-
-// The threshold, expressed in the tensor's own quantised space.
-//
-// Comparing there rather than dequantising every score first is what makes the
-// hot loop cheap: a frame at 640x640 has 8,400 anchors times 80 classes, and
-// dequantising all of them to reject almost all of them is most of the cost.
-std::int8_t quantise(float value, const hal::Quantisation& quant) {
-    if (!quant.quantised()) return 0;
-    const float raw = value / quant.scale + static_cast<float>(quant.zeroPoint);
-    return static_cast<std::int8_t>(std::clamp(std::lround(raw), -128L, 127L));
-}
-
-// Distribution Focal Loss: each side of the box is a probability distribution
-// over `bins` integer distances, and the value is its expectation. Softmax then
-// weighted sum.
-void decodeDfl(const float* raw, int bins, float* sides) {
-    for (int side = 0; side < kBoxSides; ++side) {
-        float sum = 0.0f;
-        float accumulated = 0.0f;
-        // Softmax needs the exponentials twice, and `bins` is 16 in every
-        // YOLOv8 export seen so far — small enough to keep on the stack.
-        float exponentials[64];
-        if (bins > 64) {
-            sides[side] = 0.0f;
-            continue;
-        }
-        for (int i = 0; i < bins; ++i) {
-            exponentials[i] = std::exp(raw[i + side * bins]);
-            sum += exponentials[i];
-        }
-        if (sum <= 1e-6f) {
-            sides[side] = 0.0f;
-            continue;
-        }
-        for (int i = 0; i < bins; ++i) {
-            accumulated += (exponentials[i] / sum) * static_cast<float>(i);
-        }
-        sides[side] = accumulated;
-    }
-}
-
-struct Candidate {
-    float x1, y1, x2, y2;
-    float score;
-    int classId;
-};
-
-float intersectionOverUnion(const Candidate& a, const Candidate& b) {
-    const float left = std::max(a.x1, b.x1);
-    const float top = std::max(a.y1, b.y1);
-    const float right = std::min(a.x2, b.x2);
-    const float bottom = std::min(a.y2, b.y2);
-    const float overlap = std::max(0.0f, right - left) * std::max(0.0f, bottom - top);
-    if (overlap <= 0.0f) return 0.0f;
-    const float areaA = (a.x2 - a.x1) * (a.y2 - a.y1);
-    const float areaB = (b.x2 - b.x1) * (b.y2 - b.y1);
-    const float sum = areaA + areaB - overlap;
-    return sum <= 0.0f ? 0.0f : overlap / sum;
-}
-
-// Non-maximum suppression, PER CLASS. Across classes would delete a person
-// standing in front of a car, which is exactly the case a VMS is for.
-std::vector<Candidate> suppress(std::vector<Candidate> candidates, float threshold) {
-    std::sort(candidates.begin(), candidates.end(),
-              [](const Candidate& a, const Candidate& b) { return a.score > b.score; });
-
-    std::vector<Candidate> kept;
-    std::vector<bool> removed(candidates.size(), false);
-    for (std::size_t i = 0; i < candidates.size(); ++i) {
-        if (removed[i]) continue;
-        kept.push_back(candidates[i]);
-        for (std::size_t j = i + 1; j < candidates.size(); ++j) {
-            if (removed[j]) continue;
-            if (candidates[j].classId != candidates[i].classId) continue;
-            if (intersectionOverUnion(candidates[i], candidates[j]) > threshold) {
-                removed[j] = true;
-            }
-        }
-    }
-    return kept;
-}
+using yolo::Candidate;
+using yolo::kBoxSides;
 
 // One (box, score) pair from the head, at one scale.
 struct Head {
@@ -169,7 +83,7 @@ public:
             collect(head, context, candidates);
         }
 
-        const auto kept = suppress(std::move(candidates), context.nmsThreshold);
+        const auto kept = yolo::suppress(std::move(candidates), context.nmsThreshold);
 
         // Back to SOURCE coordinates. The model saw a letterboxed image, so
         // undoing the padding and the scale is what makes the boxes line up
@@ -222,7 +136,7 @@ private:
         const auto* scoreF32 = static_cast<const float*>(head.score->data);
         const auto* boxI8 = static_cast<const std::int8_t*>(head.box->data);
         const auto* boxF32 = static_cast<const float*>(head.box->data);
-        const std::int8_t thresholdI8 = quantise(context.confidence, head.score->quant);
+        const std::int8_t thresholdI8 = yolo::quantise(context.confidence, head.score->quant);
 
         std::vector<float> rawBox(static_cast<std::size_t>(bins) * kBoxSides);
         float sides[kBoxSides];
@@ -243,7 +157,7 @@ private:
                     }
                 }
                 if (bestClass < 0) continue;
-                bestScore = dequantise(best, head.score->quant);
+                bestScore = yolo::dequantise(best, head.score->quant);
             } else {
                 for (int c = 0; c < classes; ++c) {
                     const float value = scoreF32[c * cells + cell];
@@ -255,14 +169,14 @@ private:
                 if (bestClass < 0 || bestScore < context.confidence) continue;
             }
 
-            if (!passesClass(context.classFilter, bestClass)) continue;
+            if (!yolo::passesClass(context.classFilter, bestClass)) continue;
 
             for (int k = 0; k < bins * kBoxSides; ++k) {
                 rawBox[static_cast<std::size_t>(k)] =
-                    quantised ? dequantise(boxI8[k * cells + cell], head.box->quant)
+                    quantised ? yolo::dequantise(boxI8[k * cells + cell], head.box->quant)
                               : boxF32[k * cells + cell];
             }
-            decodeDfl(rawBox.data(), bins, sides);
+            yolo::decodeDfl(rawBox.data(), bins, sides);
 
             const float x = static_cast<float>(cell % gridW);
             const float y = static_cast<float>(cell / gridW);
@@ -275,13 +189,6 @@ private:
             candidate.classId = bestClass;
             out.push_back(candidate);
         }
-    }
-
-    // Filtering here as well as in the runner, because rejecting a class before
-    // the DFL decode skips the most expensive part of the loop for it.
-    static bool passesClass(const std::vector<int>& filter, int classId) {
-        if (filter.empty()) return true;
-        return std::find(filter.begin(), filter.end(), classId) != filter.end();
     }
 };
 

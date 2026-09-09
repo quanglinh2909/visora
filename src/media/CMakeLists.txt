@@ -35,6 +35,7 @@ add_library(visora_media STATIC
     ai/JpegDecoder.cpp
     ai/JpegEncoder.cpp
     ai/MotionEventRecorder.cpp
+    ai/MotionSnapshotWriter.cpp
     moq/MoqFeed.cpp
     moq/MoqService.cpp
     webrtc/Sdp.cpp

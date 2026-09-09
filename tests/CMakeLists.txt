@@ -54,6 +54,16 @@ target_link_libraries(camera_tests PRIVATE visora::store)
 target_include_directories(camera_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME camera_tests COMMAND camera_tests)
 
+# What the persistence adapters do that is NOT a database call. Today that is
+# the ai_jobs.stages column, whose shape the predecessor also reads — so the
+# encoding is a contract and not an internal detail.
+if(VISORA_WITH_API)
+    add_executable(store_tests store_tests.cpp)
+    target_link_libraries(store_tests PRIVATE visora::store)
+    target_include_directories(store_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME store_tests COMMAND store_tests)
+endif()
+
 # The live-stream runtime: the join of a camera row to its running pipeline.
 # StreamControl and SnapshotGrabber are ports, so this needs no RTSP server and
 # no camera on the network.

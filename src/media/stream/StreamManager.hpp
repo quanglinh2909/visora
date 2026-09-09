@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "media/camera/Camera.hpp"
+#include "media/source/CameraSourceRegistry.hpp"
 #include "media/stream/RetryPolicy.hpp"
 #include "media/stream/RtspServer.hpp"
 #include "media/stream/StreamControl.hpp"
@@ -37,7 +38,13 @@ struct StreamManagerConfig {
 
 class StreamManager : public StreamControl {
 public:
+    // `sources` is the shared per-camera source. Passing it makes the restream
+    // pull the camera ONCE for everything — RTSP viewers, recording and AI —
+    // instead of opening a connection per consumer. Null falls back to a
+    // connection of the mount's own, which is what an installation running the
+    // RTSP server on its own gets.
     StreamManager(StreamManagerConfig config, std::shared_ptr<RtspServer> server,
+                  std::shared_ptr<CameraSourceRegistry> sources,
                   std::function<void(const std::string& cameraId, const StreamStatus&)> onStatus);
     ~StreamManager() override;
 
@@ -91,6 +98,7 @@ private:
 
     StreamManagerConfig m_config;
     std::shared_ptr<RtspServer> m_server;
+    std::shared_ptr<CameraSourceRegistry> m_sources;
     std::function<void(const std::string&, const StreamStatus&)> m_onStatus;
 
     mutable std::mutex m_mutex;

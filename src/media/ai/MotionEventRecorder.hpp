@@ -18,13 +18,23 @@
 #include <string>
 
 #include "media/ai/AiRuntime.hpp"
+#include "media/ai/MotionSnapshotWriter.hpp"
 #include "media/recording/RecordingRepository.hpp"
 
 namespace visora::media {
 
+struct MotionEventRecorderConfig {
+    // Where snapshots are written. Empty turns them off, which is what a build
+    // with no JPEG encoder ends up with anyway.
+    std::string snapshotDir = "motion-snapshots";
+    int jpegQuality = 85;
+};
+
 class MotionEventRecorder {
 public:
-    explicit MotionEventRecorder(std::shared_ptr<RecordingRepository> recordings);
+    MotionEventRecorder(std::shared_ptr<RecordingRepository> recordings,
+                        MotionEventRecorderConfig config = {});
+    ~MotionEventRecorder();
 
     // Whether this camera's events are stored at all.
     void setSaving(const std::string& cameraId, bool saving);
@@ -44,6 +54,10 @@ private:
     };
 
     std::shared_ptr<RecordingRepository> m_recordings;
+    // Owned here because this is what decides an event has started, and the
+    // snapshot belongs to that decision. It writes on its own thread and
+    // attaches the path to the row once the file exists.
+    std::unique_ptr<MotionSnapshotWriter> m_snapshots;
     std::mutex m_mutex;
     std::map<std::string, Open> m_open;      // camera id -> open event
     std::map<std::string, bool> m_saving;    // camera id -> store events?

@@ -21,7 +21,12 @@ target_link_libraries(visora_vision PUBLIC visora::core visora::hal)
 # target_sources. See docs/ARCHITECTURE.md.
 add_library(visora_vision_sinks OBJECT
     sinks/UnixSocketSink.cpp
+    models/FaceEmbedding.cpp
+    models/PpOcrDetect.cpp
+    models/PpOcrRecognise.cpp
     models/Yolov8Detect.cpp
+    models/Yolov8Pose.cpp
+    models/Yolov8Seg.cpp
     transforms/CropTransform.cpp
 )
 target_link_libraries(visora_vision_sinks PUBLIC visora::vision)

@@ -33,6 +33,8 @@ public:
     core::Result<media::MotionEvent> insertMotionEvent(const media::MotionEvent& event) override;
     core::Status closeMotionEvent(const std::string& id, std::int64_t endMs, double maxScore,
                                   const std::string& cells) override;
+    core::Status setMotionEventImage(const std::string& id,
+                                     const std::string& imagePath) override;
     core::Result<std::vector<media::MotionEvent>> motionEventsInRange(
         const std::string& cameraId, std::int64_t fromMs, std::int64_t toMs) override;
     core::Result<media::MotionEvent> motionEvent(const std::string& id) override;

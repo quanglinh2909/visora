@@ -202,13 +202,7 @@ void AiRuntime::stop() {
         workers.swap(m_workers);
         cameras.swap(m_cameras);
     }
-    for (auto& [id, worker] : workers) {
-        worker->running.store(false);
-        worker->wake.notify_all();
-        if (worker->tap && worker->tapSinkId != 0) worker->tap->removeSink(worker->tapSinkId);
-        if (worker->thread.joinable()) worker->thread.join();
-        worker->jpeg.stop();
-    }
+    for (auto& [id, worker] : workers) shutDown(worker);
     for (auto& [id, entry] : cameras) {
         if (entry.tap) entry.tap->stop();
     }
@@ -240,6 +234,30 @@ std::shared_ptr<FrameTap> AiRuntime::tapFor(const std::string& cameraId) {
     return tap;
 }
 
+void AiRuntime::shutDown(const std::shared_ptr<Worker>& worker) {
+    if (!worker) return;
+    worker->running.store(false);
+    worker->wake.notify_all();
+    if (worker->tap && worker->tapSinkId != 0) worker->tap->removeSink(worker->tapSinkId);
+    if (worker->thread.joinable()) worker->thread.join();
+    worker->jpeg.stop();
+}
+
+void AiRuntime::retireTapIfUnused(CameraEntry& entry) {
+    // Caller holds the lock.
+    if (!entry.tap) return;
+    if (entry.camera.motionEnabled) return;
+    for (const auto& [jobId, worker] : m_workers) {
+        if (worker->job.cameraId == entry.camera.id) return;
+    }
+    // stop() rather than merely dropping the pointer: a job worker holds a
+    // shared_ptr of its own, so releasing this one would leave the decoder
+    // running with nothing reading it.
+    entry.tap->stop();
+    entry.tap.reset();
+    VS_INFO(kCategory) << entry.camera.id << ": decoder stopped, nothing is reading it";
+}
+
 void AiRuntime::updateMotion(CameraEntry& entry) {
     // Caller holds the lock.
     const bool wanted = entry.camera.motionEnabled && entry.tap && entry.tap->running();
@@ -248,6 +266,7 @@ void AiRuntime::updateMotion(CameraEntry& entry) {
         if (entry.tap && entry.motionSinkId != 0) entry.tap->removeSink(entry.motionSinkId);
         entry.motionSinkId = 0;
         entry.motion.reset();
+        retireTapIfUnused(entry);
         return;
     }
     if (entry.motionSinkId != 0) return;  // already attached
@@ -275,10 +294,18 @@ void AiRuntime::updateMotion(CameraEntry& entry) {
     const std::int64_t holdMs =
         static_cast<std::int64_t>(std::max(0, entry.camera.postMotionSeconds)) * 1000;
     auto lastTriggerMs = std::make_shared<std::atomic<std::int64_t>>(0);
+    // The edge is tracked HERE, where the frame is. The recorder detects the
+    // same edge from `triggered`, and the two agree because both read the one
+    // value this callback computes — but only this side can still copy the
+    // picture, so it is the side that does.
+    auto wasTriggered = std::make_shared<std::atomic<bool>>(false);
+    // A camera whose events are not stored gets no snapshot: nothing would
+    // point at the file and it would sit on the disk forever.
+    const bool saveEvents = entry.camera.motionSaveEvents;
 
     entry.motionSinkId = entry.tap->addSink(
-        [cameraId, motion, zones, grid, onMotion, onEvent, holdMs,
-         lastTriggerMs](const core::ImageView& frame, std::int64_t) {
+        [cameraId, motion, zones, grid, onMotion, onEvent, holdMs, saveEvents,
+         lastTriggerMs, wasTriggered](const core::ImageView& frame, std::int64_t) {
             // On the decoder's thread, and cheap enough to belong there: one
             // subtraction per sampled point over a fixed 160x120 grid.
             const std::string cells = motion->analyse(frame, {});
@@ -293,6 +320,15 @@ void AiRuntime::updateMotion(CameraEntry& entry) {
             const std::int64_t since = lastTriggerMs->load();
             notice.triggered = firing || (since != 0 && nowMs - since < holdMs);
             splitByZones(cells, zones, notice.insideCells, notice.outsideCells);
+
+            // Copy the frame on the RISING edge only. A memcpy of one frame per
+            // event is nothing; a memcpy per analysed frame, for every camera,
+            // would be paid whether or not anything ever happens.
+            const bool previously = wasTriggered->exchange(notice.triggered);
+            if (saveEvents && notice.triggered && !previously) {
+                auto copy = std::make_shared<core::OwnedImage>(core::copyOf(frame));
+                if (!copy->empty()) notice.frame = std::move(copy);
+            }
 
             if (onMotion) onMotion(notice);
             // Only a triggering FRAME feeds the recording gate, not the whole
@@ -435,11 +471,39 @@ void AiRuntime::removeJob(const std::string& jobId) {
     }
     // Outside the lock: joining a worker waits for an inference to finish, and
     // holding the runtime's lock for that would stall every other job.
-    worker->running.store(false);
-    worker->wake.notify_all();
-    if (worker->tap && worker->tapSinkId != 0) worker->tap->removeSink(worker->tapSinkId);
-    if (worker->thread.joinable()) worker->thread.join();
-    worker->jpeg.stop();
+    shutDown(worker);
+
+    // The decoder it was reading may now have no reader at all.
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto camera = m_cameras.find(worker->job.cameraId);
+    if (camera != m_cameras.end()) retireTapIfUnused(camera->second);
+}
+
+void AiRuntime::removeCamera(const std::string& cameraId) {
+    std::vector<std::shared_ptr<Worker>> orphaned;
+    std::shared_ptr<FrameTap> tap;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (auto it = m_workers.begin(); it != m_workers.end();) {
+            if (it->second->job.cameraId != cameraId) {
+                ++it;
+                continue;
+            }
+            orphaned.push_back(it->second);
+            it = m_workers.erase(it);
+        }
+        const auto entry = m_cameras.find(cameraId);
+        if (entry != m_cameras.end()) {
+            if (entry->second.tap && entry->second.motionSinkId != 0) {
+                entry->second.tap->removeSink(entry->second.motionSinkId);
+            }
+            tap = std::move(entry->second.tap);
+            m_cameras.erase(entry);
+        }
+    }
+    // Outside the lock, for the reason removeJob gives.
+    for (const auto& worker : orphaned) shutDown(worker);
+    if (tap) tap->stop();
 }
 
 core::Result<std::vector<vision::Detection>> AiRuntime::runOnce(

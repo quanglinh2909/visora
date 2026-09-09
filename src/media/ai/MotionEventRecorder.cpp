@@ -34,8 +34,32 @@ std::string join(const std::set<std::string>& cells) {
 
 }  // namespace
 
-MotionEventRecorder::MotionEventRecorder(std::shared_ptr<RecordingRepository> recordings)
-    : m_recordings(std::move(recordings)) {}
+MotionEventRecorder::MotionEventRecorder(std::shared_ptr<RecordingRepository> recordings,
+                                         MotionEventRecorderConfig config)
+    : m_recordings(std::move(recordings)) {
+    if (config.snapshotDir.empty()) return;
+
+    auto repository = m_recordings;
+    m_snapshots = std::make_unique<MotionSnapshotWriter>(
+        config.snapshotDir, config.jpegQuality,
+        [repository](const std::string& eventId, const std::string& path) {
+            const core::Status stored = repository->setMotionEventImage(eventId, path);
+            if (!stored.ok()) {
+                VS_WARN(kCategory) << "the event snapshot was written but not indexed: "
+                                   << stored.error().message;
+            }
+        });
+    const core::Status ready = m_snapshots->start();
+    if (!ready.ok()) {
+        // Events are still recorded; they simply have no picture. Refusing to
+        // record them because a JPEG encoder is missing would lose the thing an
+        // operator actually asked for.
+        VS_WARN(kCategory) << "motion event snapshots are off: " << ready.error().message;
+        m_snapshots.reset();
+    }
+}
+
+MotionEventRecorder::~MotionEventRecorder() = default;
 
 void MotionEventRecorder::setSaving(const std::string& cameraId, bool saving) {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -65,6 +89,14 @@ void MotionEventRecorder::observe(const MotionNotice& notice) {
                                    << stored.error().message;
                 return;
             }
+            // The picture, if this frame carried one. Written and indexed on
+            // the writer's thread — the row exists now and gains its image
+            // path a moment later, rather than naming a file that does not
+            // exist yet.
+            if (m_snapshots && notice.frame) {
+                m_snapshots->capture(notice.cameraId, stored.value().id, notice.frame);
+            }
+
             Open open;
             open.eventId = stored.value().id;
             open.startMs = event.startMs;

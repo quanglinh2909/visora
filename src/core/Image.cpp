@@ -1,5 +1,7 @@
 #include "core/Image.hpp"
 
+#include <cstring>
+
 namespace visora::core {
 
 const char* toString(PixelFormat format) {
@@ -127,6 +129,32 @@ ImageView OwnedImage::view() const {
     v.planes = Planes::packed(m_format, m_size);
     v.data = m_bytes.data();
     return v;
+}
+
+OwnedImage copyOf(const ImageView& image) {
+    OwnedImage out;
+    if (!image.valid() || !image.hasCpu()) return out;
+
+    out.reset(image.format, image.size);
+    const int planes = planeCount(image.format);
+    const Planes packedPlanes = Planes::packed(image.format, image.size);
+    for (int plane = 0; plane < planes; ++plane) {
+        const int width = packedStride(image.format, image.size.width, plane);
+        // The chroma plane of a 4:2:0 format is half as tall as the luma one.
+        const int height = (image.format == PixelFormat::NV12 && plane == 1)
+                               ? image.size.height / 2
+                               : image.size.height;
+        const int sourceStride =
+            image.planes[plane].stride > 0 ? image.planes[plane].stride : width;
+        const std::uint8_t* from = image.data + image.planes[plane].offset;
+        std::uint8_t* to = out.data() + packedPlanes[plane].offset;
+        for (int row = 0; row < height; ++row) {
+            std::memcpy(to + static_cast<std::size_t>(row) * width,
+                        from + static_cast<std::size_t>(row) * sourceStride,
+                        static_cast<std::size_t>(width));
+        }
+    }
+    return out;
 }
 
 std::string describe(const ImageView& image) {

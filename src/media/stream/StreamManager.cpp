@@ -27,8 +27,12 @@ bool wantsStreaming(const Camera& camera) {
 
 StreamManager::StreamManager(
     StreamManagerConfig config, std::shared_ptr<RtspServer> server,
+    std::shared_ptr<CameraSourceRegistry> sources,
     std::function<void(const std::string&, const StreamStatus&)> onStatus)
-    : m_config(std::move(config)), m_server(std::move(server)), m_onStatus(std::move(onStatus)) {}
+    : m_config(std::move(config)),
+      m_server(std::move(server)),
+      m_sources(std::move(sources)),
+      m_onStatus(std::move(onStatus)) {}
 
 StreamManager::~StreamManager() { stop(); }
 
@@ -263,14 +267,33 @@ void StreamManager::publishSession(Session& session) {
     RestreamOptions options;
     options.latencyMs = m_config.sourceLatencyMs;
 
-    const std::string launch = restreamLaunch(source, options);
+    // From the SHARED source when there is one. A camera watched over RTSP and
+    // recorded at the same time used to be pulled twice — two jitterbuffers,
+    // two parsers, and two of the handful of simultaneous sessions a camera
+    // permits.
+    //
+    // Still on demand: the provider below runs when a client first asks for the
+    // stream, and the source is released when the last one leaves, so a camera
+    // nobody is watching and nothing is recording costs nothing.
+    const bool shared = m_sources != nullptr;
+    const std::string launch = shared ? restreamFromSourceLaunch(source.codec)
+                                      : restreamLaunch(source, options);
     if (launch.empty()) {
         session.status.state = CameraState::Error;
         session.status.lastError = "no pipeline for codec " + std::string(toString(source.codec));
         return;
     }
 
-    const core::Status published = m_server->publish(mountPath(camera.id), launch);
+    const core::Status published =
+        shared ? m_server->publishFromSource(
+                     mountPath(camera.id), launch, kRestreamAppSrcName,
+                     [sources = m_sources, source]() -> std::shared_ptr<EncodedSource> {
+                         auto acquired = sources->acquire(source.id, source.rtspUrl,
+                                                          source.codec);
+                         if (!acquired) return nullptr;
+                         return acquired.value();
+                     })
+               : m_server->publish(mountPath(camera.id), launch);
     if (!published.ok()) {
         session.status.state = CameraState::Error;
         session.status.lastError = published.error().message;

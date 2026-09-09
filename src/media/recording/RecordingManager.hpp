@@ -103,6 +103,9 @@ private:
     std::shared_ptr<RecordingRepository> m_repository;
     std::shared_ptr<CameraSourceRegistry> m_sources;
 
+    // Serialises apply() against itself, so it can release m_mutex to stop a
+    // session without a second apply building a rival one. See apply().
+    std::mutex m_applyMutex;
     mutable std::mutex m_mutex;
     std::condition_variable m_wake;
     std::map<std::string, Entry> m_entries;

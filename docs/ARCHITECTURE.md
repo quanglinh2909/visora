@@ -309,3 +309,37 @@ The lesson generalises to any accelerator backend:
 - **An Ort `TypeInfo` must outlive the shape info taken from it.**
   `GetTensorTypeAndShapeInfo()` returns a borrowing view; written as one
   expression the parent is a temporary and `GetShape()` reads freed memory.
+
+- **Never call a `stop()` that joins a bus watcher while holding the lock that
+  watcher's callback needs.** `RecordingSession::stop()` sends EOS — which is
+  precisely what makes the muxer close its last fragment — then joins the
+  watcher, whose final act is to deliver that "fragment closed" and call
+  `RecordingManager::onSegment`, which takes the manager's mutex. Held across
+  the stop, the joiner waits for a thread waiting for the joiner's own lock, and
+  every later recording change queues behind it for ever. Take the session out
+  of the map under the lock, release it, then stop. `remove()` and `stop()`
+  always did; `apply()` did not, and turning recording off on a camera that was
+  recording hung the request permanently.
+
+- **A decoder is not reference-counted into nothing.** `FrameTap` is held by a
+  `shared_ptr`, so dropping one pointer leaves it running if a job holds
+  another; and nothing at all removes it when the last reader goes. Motion
+  turned off, the last job deleted, or the camera itself deleted must each ask
+  whether anything still reads the tap and `stop()` it when nothing does —
+  otherwise a deleted camera keeps being decoded and keeps a connection to it
+  open.
+
+- **Rebase timestamps for a live restream; restamp them for a muxer.** Both
+  paths take buffers from the shared source, and they want opposite things.
+  `splitmuxsink` needs the local clock to cut segments (clear the PTS and let
+  `do-timestamp` apply it). A payloader wants the camera's real frame SPACING,
+  so subtract the first PTS this media saw instead: restamping there gave two
+  frames of one arriving burst the same timestamp, and ffmpeg rejects the
+  duplicate DTS.
+
+- **A ModelType instance is shared by every job worker.** They are stateless by
+  contract, so anything a type must remember per model file — a PP-OCR
+  dictionary is the case that forced it — belongs in a guarded cache keyed by
+  `ModelContext::modelPath`, never in a plain member. `labelFor()` cannot serve
+  it: it is asked about a class id with no idea which of three loaded
+  recognisers produced it.

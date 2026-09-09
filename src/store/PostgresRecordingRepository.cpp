@@ -316,6 +316,18 @@ core::Status PostgresRecordingRepository::closeMotionEvent(const std::string& id
     return {};
 }
 
+core::Status PostgresRecordingRepository::setMotionEventImage(const std::string& id,
+                                                              const std::string& imagePath) {
+    const auto result = m_impl->run(
+        "UPDATE motion_events SET image_path = :image_path WHERE id = CAST(:id AS UUID)",
+        {
+            {"id", oatpp::String(id.c_str())},
+            {"image_path", oatpp::String(imagePath.c_str())},
+        });
+    if (!result || !result->isSuccess()) return toError(result);
+    return {};
+}
+
 core::Result<std::vector<media::MotionEvent>>
 PostgresRecordingRepository::motionEventsInRange(const std::string& cameraId,
                                                  std::int64_t fromMs, std::int64_t toMs) {

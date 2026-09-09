@@ -39,7 +39,25 @@ struct RestreamOptions {
 //
 // Wrapped in parentheses because it feeds gst_rtsp_media_factory_set_launch.
 // Returns empty for a codec with no payloader.
+//
+// THIS OPENS ITS OWN CONNECTION to the camera. Kept for the case where there is
+// no shared source to attach to — a codec nobody probed, or an installation
+// running the RTSP server on its own — but restreamFromSourceLaunch is what a
+// camera that is also recorded or analysed should use.
 std::string restreamLaunch(const CameraSource& camera, const RestreamOptions& options);
+
+// The appsrc a shared-source restream is fed through.
+inline constexpr const char* kRestreamAppSrcName = "rs_src";
+
+// Restream from the camera's SHARED source instead of a connection of its own.
+//
+// A camera being watched over RTSP and recorded at the same time used to be
+// pulled twice: two jitterbuffers, two depayloaders, two parsers, and two of
+// the handful of simultaneous sessions a Dahua or Hikvision unit permits. This
+// takes the access units the shared source is already producing.
+//
+// Returns empty for a codec with no payloader.
+std::string restreamFromSourceLaunch(Codec codec);
 
 // The mount path and public URL a restreamed camera is served on.
 std::string mountPath(const std::string& cameraId);

@@ -66,6 +66,15 @@ struct ModelContext {
     float nmsThreshold = 0.45f;
     // Class ids to keep. Empty means keep everything.
     std::vector<int> classFilter;
+
+    // The artefact these tensors came out of.
+    //
+    // Here because some types carry data that lives BESIDE the weights and
+    // differs per model file: a PP-OCR recogniser's character dictionary is the
+    // case that forced it. labelFor() cannot serve that — it is asked about a
+    // class id with no idea which of three loaded recognisers produced it — so
+    // the type reads its sidecar from here and writes the text itself.
+    std::string modelPath;
 };
 
 class ModelType {

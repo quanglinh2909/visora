@@ -45,6 +45,15 @@ public:
     virtual core::Result<MotionEvent> insertMotionEvent(const MotionEvent& event) = 0;
     virtual core::Status closeMotionEvent(const std::string& id, std::int64_t endMs,
                                           double maxScore, const std::string& cells) = 0;
+    // Attaches the snapshot to an event that is already stored.
+    //
+    // Separate from the insert because the picture is not ready when the event
+    // is: the frame has to leave the decoder's thread, be encoded and be
+    // written before there is a file, and the row must not point at a path that
+    // does not exist yet. An event whose snapshot fails simply keeps no image.
+    virtual core::Status setMotionEventImage(const std::string& id,
+                                             const std::string& imagePath) = 0;
+
     virtual core::Result<std::vector<MotionEvent>> motionEventsInRange(
         const std::string& cameraId, std::int64_t fromMs, std::int64_t toMs) = 0;
     virtual core::Result<MotionEvent> motionEvent(const std::string& id) = 0;

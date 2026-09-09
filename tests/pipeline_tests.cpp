@@ -212,6 +212,39 @@ VS_TEST(the_url_is_quoted_so_a_password_cannot_break_the_syntax) {
     }
 }
 
+VS_TEST(the_shared_source_restream_opens_no_connection_of_its_own) {
+    // The whole point of it: a camera watched over RTSP and recorded at the
+    // same time used to be pulled twice — two jitterbuffers, two parsers, and
+    // two of the handful of simultaneous sessions a camera permits.
+    for (const Codec codec : {Codec::H264, Codec::H265}) {
+        const std::string launch = restreamFromSourceLaunch(codec);
+        VS_CHECK(!launch.empty());
+        VS_CHECK(launch.find("rtspsrc") == std::string::npos);
+        VS_CHECK(launch.find("appsrc") != std::string::npos);
+        VS_CHECK(launch.find(kRestreamAppSrcName) != std::string::npos);
+        // pay0 is what gst_rtsp_media_factory looks for; without the name the
+        // mount builds and then serves nothing.
+        VS_CHECK(launch.find("name=pay0") != std::string::npos);
+        // Buffers arrive stripped of the source pipeline's clock — see
+        // SourceFeed::push — so this pipeline must stamp them itself.
+        VS_CHECK(launch.find("do-timestamp=true") != std::string::npos);
+        // Re-sends SPS/PPS with every keyframe, so a viewer joining mid-stream
+        // decodes without waiting for the camera to send parameter sets again.
+        VS_CHECK(launch.find("config-interval=-1") != std::string::npos);
+
+        std::string error;
+        if (!gstreamerParses(launch, &error)) {
+            ::visora::test::reportFailure(__FILE__, __LINE__,
+                                          std::string("gst_parse_launch rejected the ") +
+                                              toString(codec) + " shared restream: " + error);
+        }
+    }
+}
+
+VS_TEST(a_shared_restream_of_an_unknown_codec_produces_nothing) {
+    VS_CHECK(restreamFromSourceLaunch(Codec::Unknown).empty());
+}
+
 VS_TEST(gstreamer_parses_what_we_build) {
     // The check the predecessor could not make without a camera attached: not
     // "does the string look right" but "does GStreamer accept it".

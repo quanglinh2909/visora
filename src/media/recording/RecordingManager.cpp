@@ -73,41 +73,65 @@ void RecordingManager::stop() {
 }
 
 void RecordingManager::apply(const Camera& camera, Codec codec) {
+    // WHY THIS IS IN TWO LOCKED PHASES with a gap in the middle.
+    //
+    // Stopping a session cannot be done while holding m_mutex. stop() sends
+    // EOS, waits for the muxer to finalise, and then JOINS the bus watcher —
+    // and the last thing that watcher does is deliver "fragment closed", which
+    // calls onSegment, which takes m_mutex. Holding it across stop() is a
+    // deadlock by construction: the joiner waits for a thread that is waiting
+    // for the joiner's own lock, and every later recording change waits behind
+    // it for ever.
+    //
+    // It is not hypothetical and it is not rare: EOS is exactly what makes the
+    // muxer close its last fragment, so the watcher is almost always in that
+    // callback at that moment. remove() and stop() have always taken the
+    // session out first and stopped it outside the lock; this did not, and
+    // turning recording off on a camera that was recording hung the request.
+    //
+    // The gap is what m_applyMutex covers: without it a second apply() could
+    // slip into the gap and build a rival session for the same camera. It
+    // serialises configuration changes against each other, which costs a
+    // configuration change on one camera a wait behind another camera's
+    // finalise — seconds at worst, and only when both change at once.
+    std::lock_guard<std::mutex> applying(m_applyMutex);
+
+    std::unique_ptr<RecordingSession> retired;
+    bool build = false;
+
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        Entry& entry = m_entries[camera.id];
+        entry.camera = camera;
+        entry.codec = codec;
+
+        if (!shouldRecord(camera)) {
+            if (entry.session) {
+                VS_INFO(kCategory) << camera.id << ": recording turned off";
+                retired = std::move(entry.session);
+                entry.source.reset();
+                entry.builtSource.clear();
+            }
+        } else if (codec == Codec::Unknown) {
+            // The codec is discovered by the streaming layer's probe. Recording
+            // waits for it rather than guessing: a pipeline built for the wrong
+            // codec fails in a way that looks like a broken camera.
+        } else if (entry.session && entry.session->running() &&
+                   !recordingNeedsRestart(camera, entry.builtSource, entry.builtMode,
+                                          entry.builtSegmentSeconds)) {
+            // A rename reached us. Nothing to do — restarting here would
+            // discard the segment currently being written.
+        } else {
+            retired = std::move(entry.session);
+            build = true;
+        }
+    }
+
+    if (retired) retired->stop();
+    if (!build) return;
+
     std::lock_guard<std::mutex> lock(m_mutex);
     Entry& entry = m_entries[camera.id];
-    entry.camera = camera;
-    entry.codec = codec;
-
-    const bool wanted = shouldRecord(camera);
-
-    if (!wanted) {
-        if (entry.session) {
-            VS_INFO(kCategory) << camera.id << ": recording turned off";
-            entry.session->stop();
-            entry.session.reset();
-            entry.source.reset();
-            entry.builtSource.clear();
-        }
-        return;
-    }
-
-    // The codec is discovered by the streaming layer's probe. Recording waits
-    // for it rather than guessing: a pipeline built for the wrong codec fails
-    // in a way that looks like a broken camera.
-    if (codec == Codec::Unknown) return;
-
-    if (entry.session && entry.session->running() &&
-        !recordingNeedsRestart(camera, entry.builtSource, entry.builtMode,
-                               entry.builtSegmentSeconds)) {
-        // A rename reached us. Nothing to do — restarting here would discard
-        // the segment currently being written.
-        return;
-    }
-
-    if (entry.session) {
-        entry.session->stop();
-        entry.session.reset();
-    }
 
     auto source = m_sources->acquire(camera.id, camera.inputRtsp, codec);
     if (!source) {
@@ -132,6 +156,9 @@ void RecordingManager::apply(const Camera& camera, Codec codec) {
         cameraId, entry.source, options,
         [this, cameraId](const RecordingSegment& segment) { onSegment(cameraId, segment); });
 
+    // Starting under the lock is safe where stopping is not: start() builds the
+    // watcher rather than joining it, and onSegment takes m_mutex only for a
+    // COMPLETE segment — which cannot arrive before the first one is cut.
     const core::Status started = entry.session->start();
     if (!started.ok()) {
         VS_WARN(kCategory) << camera.id << ": recording failed to start: "

@@ -13,6 +13,8 @@ target_link_libraries(visora_store PUBLIC visora::media visora::vision)
 
 if(VISORA_WITH_API)
     target_sources(visora_store PRIVATE
+        AiJobJson.cpp
+        PostgresAiJobRepository.cpp
         PostgresCameraRepository.cpp
         PostgresRecordingRepository.cpp
     )

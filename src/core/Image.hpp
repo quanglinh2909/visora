@@ -135,6 +135,19 @@ private:
     std::vector<std::uint8_t> m_bytes;
 };
 
+// A packed, owned copy of a view someone else's thread is about to reuse.
+//
+// Exists because a streaming thread may hand out a frame it will overwrite the
+// moment the callback returns, and anything that wants to keep it must copy
+// while it is still valid. Row by row, honouring the source strides — a decoder
+// frame is very rarely tightly packed, and memcpy of the whole buffer produces
+// a sheared picture on any width the hardware padded.
+//
+// Returns an empty image for a view with no CPU mapping: a dmabuf-only frame
+// cannot be copied here, and the caller must decide what that means rather than
+// receive a black picture.
+OwnedImage copyOf(const ImageView& image);
+
 std::string describe(const ImageView& image);
 
 }  // namespace visora::core

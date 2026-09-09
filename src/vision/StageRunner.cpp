@@ -141,6 +141,7 @@ core::Result<std::vector<Detection>> StageRunner::run(const core::ImageView& fra
     context.contentRect = content.value();
     context.confidence = root.config.confidence;
     context.classFilter = root.config.classFilter;
+    context.modelPath = root.config.modelPath;
 
     auto detections = root.type->decode(tensors.value(), context);
     if (!detections) return detections.error();
@@ -216,6 +217,7 @@ core::Status StageRunner::runChildStage(std::size_t index, const core::ImageView
                                                           context.sourceSize, inputSize);
         context.confidence = stage.config.confidence;
         context.classFilter = stage.config.classFilter;
+        context.modelPath = stage.config.modelPath;
 
         const std::size_t before = parent.children.size();
         const core::Status enriched = stage.type->enrich(tensors.value(), context, parent);

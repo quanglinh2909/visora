@@ -81,3 +81,31 @@ CREATE INDEX IF NOT EXISTS idx_recording_segments_camera_motion_time
 -- name. Without this, a restart produces a second row for one file.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_recording_segments_path
   ON recording_segments(path);
+
+-- AI jobs. One row is one whole stage TREE.
+--
+-- `stages` is jsonb rather than a table of stages because a stage's `parent` is
+-- an index into the array — it means nothing outside it. A row is read and
+-- written whole, which is also how the engine loads it.
+--
+-- The stored shape is documented in src/store/AiJobJson.hpp. Note that
+-- `inputClasses` and `classFilter` inside it are comma-separated STRINGS, not
+-- arrays: the column is shared with the predecessor, which reads it that way.
+--
+-- MUST come after `cameras`: the foreign key needs it.
+--
+-- A database still carrying the pre-2026 columns (model_path, model_type_2 and
+-- the rest) needs the predecessor's sql/init.sql run once to fold them into
+-- `stages`. That migration is not repeated here, because a migration nobody can
+-- test against a real old database is worse than a pointer to the one that was.
+CREATE TABLE IF NOT EXISTS ai_jobs (
+  id          UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+  name        VARCHAR(128) NOT NULL,
+  camera_id   UUID         NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+  enabled     BOOLEAN      NOT NULL DEFAULT true,
+  max_fps     INTEGER      NOT NULL DEFAULT 0,
+  stages      JSONB        NOT NULL DEFAULT '[]'::jsonb,
+  created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_jobs_camera ON ai_jobs(camera_id);
+CREATE INDEX IF NOT EXISTS idx_ai_jobs_enabled ON ai_jobs(enabled);

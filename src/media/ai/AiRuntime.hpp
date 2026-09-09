@@ -19,6 +19,7 @@
 #include <thread>
 #include <vector>
 
+#include "core/Image.hpp"
 #include "core/Result.hpp"
 #include "media/ai/FrameTap.hpp"
 #include "media/ai/JpegDecoder.hpp"
@@ -61,6 +62,15 @@ struct MotionNotice {
     // True when a zone's level was reached. Cells move constantly; an EVENT is
     // what an operator asked to be told about.
     bool triggered = false;
+
+    // The picture, present ONLY on the frame that STARTS an event, and only
+    // for a camera that stores its events.
+    //
+    // A copy, because the decoder reuses its buffer the moment the callback
+    // returns. Copying is a memcpy on the streaming thread and encoding is not
+    // — see MotionSnapshotWriter — so this carries the frame out to where the
+    // encoding can happen, and carries nothing at all the rest of the time.
+    std::shared_ptr<const core::OwnedImage> frame;
 };
 
 // What a job is doing, for the status endpoint.
@@ -91,6 +101,14 @@ public:
     // A camera's stream changed: its codec is now known, or it went away.
     // Jobs on it are (re)started or stopped accordingly.
     void applyCamera(const Camera& camera, Codec codec);
+
+    // The camera is gone. Stops its decoder and every job on it.
+    //
+    // Needed because a decoder is not reference-counted into nothing: without
+    // it a deleted camera kept a FrameTap running for ever, decoding frames
+    // nobody read and holding a connection to a camera the operator had just
+    // removed.
+    void removeCamera(const std::string& cameraId);
 
     // Brings a job under management, or updates one already there.
     void applyJob(const vision::AiJob& job);
@@ -142,6 +160,12 @@ private:
     // goes. Held weakly for the same reason the source registry does: nothing
     // has to remember to release it.
     std::shared_ptr<FrameTap> tapFor(const std::string& cameraId);
+    // Stops a camera's decoder once nothing reads it — no motion and no job.
+    // Caller holds the lock.
+    void retireTapIfUnused(CameraEntry& entry);
+    // Tears a worker down. Never called with the lock held: joining one waits
+    // for an inference to finish.
+    static void shutDown(const std::shared_ptr<Worker>& worker);
     void restartJob(const std::string& jobId);
     // Attaches or detaches motion detection for a camera. Caller holds the lock.
     void updateMotion(CameraEntry& entry);

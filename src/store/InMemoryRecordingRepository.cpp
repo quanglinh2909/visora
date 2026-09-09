@@ -113,6 +113,15 @@ core::Status InMemoryRecordingRepository::closeMotionEvent(const std::string& id
     return {};
 }
 
+core::Status InMemoryRecordingRepository::setMotionEventImage(const std::string& id,
+                                                              const std::string& imagePath) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto it = m_motionEvents.find(id);
+    if (it == m_motionEvents.end()) return core::notFound("no motion event with id " + id);
+    it->second.imagePath = imagePath;
+    return {};
+}
+
 core::Result<std::vector<media::MotionEvent>> InMemoryRecordingRepository::motionEventsInRange(
     const std::string& cameraId, std::int64_t fromMs, std::int64_t toMs) {
     std::lock_guard<std::mutex> lock(m_mutex);

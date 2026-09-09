@@ -8,7 +8,10 @@
 #include "TestHarness.hpp"
 
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
+#include <cstdlib>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -312,6 +315,427 @@ VS_TEST(several_scales_are_all_decoded) {
     auto decoded = vision::modelType("yolov8_detect")->decode(tensors, squareContext(640, 4));
     VS_CHECK(decoded.ok());
     if (decoded.ok()) VS_CHECK_EQ(decoded.value().size(), std::size_t{3});
+}
+
+
+// --- the pose, segmentation, OCR and embedding decodes ------------------------
+//
+// Same principle as the YOLOv8 tests above: tensors built here, so the maths is
+// asserted on a machine with no NPU, no ONNX Runtime and no weights. These are
+// the decodes it is least possible to eyeball — a pose skeleton read from the
+// wrong anchor still looks like a skeleton.
+
+namespace {
+
+// Appends a float tensor, copying the data into the set's own storage.
+void appendFloat(hal::TensorSet& set, const char* name, std::vector<int> shape,
+                 const std::vector<float>& values) {
+    hal::Tensor tensor;
+    tensor.name = name;
+    tensor.type = hal::TensorType::Float32;
+    tensor.shape = std::move(shape);
+    const auto* begin = reinterpret_cast<const std::uint8_t*>(values.data());
+    set.storage.emplace_back(begin, begin + values.size() * sizeof(float));
+    tensor.data = set.storage.back().data();
+    tensor.byteCount = set.storage.back().size();
+    set.outputs.push_back(std::move(tensor));
+}
+
+// One pose branch: 64 DFL channels then ONE score channel, which is a logit.
+struct PoseBranch {
+    int grid = 0;
+    int bins = 16;
+    std::vector<float> data;
+
+    explicit PoseBranch(int g) : grid(g) {
+        data.assign(static_cast<std::size_t>(65 * g * g), 0.0f);
+        // Background is a large NEGATIVE logit, which is what a trained pose
+        // head emits and what the decode is written for. Leaving it at zero
+        // would make every cell an 0.5-confidence person, because the score
+        // channel here is a logit rather than the probability the detector
+        // head emits — the one real difference between the two decodes.
+        for (int cell = 0; cell < g * g; ++cell) {
+            data[static_cast<std::size_t>(64 * g * g + cell)] = -10.0f;
+        }
+    }
+
+    void put(int cellX, int cellY, float logit, int sideBin) {
+        const int cells = grid * grid;
+        const int cell = cellY * grid + cellX;
+        data[static_cast<std::size_t>(64 * cells + cell)] = logit;
+        for (int side = 0; side < 4; ++side) {
+            data[static_cast<std::size_t>((side * bins + sideBin) * cells + cell)] = 20.0f;
+        }
+    }
+
+    void appendTo(hal::TensorSet& set) const {
+        appendFloat(set, "branch", {1, 65, grid, grid}, data);
+    }
+};
+
+}  // namespace
+
+VS_TEST(pose_reads_each_skeleton_from_the_anchor_its_box_came_from) {
+    // The keypoint tensor is one flat array over every anchor of every scale,
+    // and suppression sorts by score — so without the anchor index a surviving
+    // box would be given somebody else's joints. That failure looks like a
+    // plausible skeleton in the wrong place, which is why it is asserted.
+    hal::TensorSet tensors;
+    PoseBranch branch(20);                        // stride 32 for a 640 input
+    branch.put(10, 10, /*logit=*/4.0f, /*sideBin=*/4);
+    branch.appendTo(tensors);
+
+    constexpr int kJoints = 17;
+    const int anchors = 20 * 20;
+    std::vector<float> joints(static_cast<std::size_t>(kJoints * 3 * anchors), 0.0f);
+    const int anchor = 10 * 20 + 10;
+    // Joint 0 of THAT anchor, in model-input pixels.
+    joints[static_cast<std::size_t>(0 * 3 * anchors + anchor)] = 300.0f;              // x
+    joints[static_cast<std::size_t>(0 * 3 * anchors + anchors + anchor)] = 350.0f;    // y
+    joints[static_cast<std::size_t>(0 * 3 * anchors + 2 * anchors + anchor)] = 0.9f;  // score
+    appendFloat(tensors, "keypoints", {1, kJoints, 3, anchors}, joints);
+
+    const vision::ModelType* pose = vision::modelType("yolov8_pose");
+    VS_CHECK(pose != nullptr);
+    if (!pose) return;
+
+    auto decoded = pose->decode(tensors, squareContext(640, 1));
+    VS_CHECK(decoded.ok());
+    if (!decoded.ok() || decoded.value().empty()) return;
+    VS_CHECK_EQ(decoded.value().size(), std::size_t{1});
+
+    const vision::Detection& detection = decoded.value().front();
+    VS_CHECK_EQ(detection.classId, 0);
+    // sigmoid(4) is about 0.982 — the score channel is a logit here, where the
+    // detector's is already a probability.
+    VS_CHECK(std::fabs(detection.score - 0.982f) < 0.01f);
+    VS_CHECK(std::fabs(detection.x1 - (336.0f - 128.0f)) < 1.0f);
+
+    VS_CHECK_EQ(detection.keypoints.size(), std::size_t{kJoints * 3});
+    if (detection.keypoints.size() < 3) return;
+    VS_CHECK(std::fabs(detection.keypoints[0] - 300.0f) < 1.0f);
+    VS_CHECK(std::fabs(detection.keypoints[1] - 350.0f) < 1.0f);
+    VS_CHECK(std::fabs(detection.keypoints[2] - 0.9f) < 0.01f);
+}
+
+VS_TEST(pose_refuses_outputs_whose_anchor_counts_do_not_line_up) {
+    // A skipped or reordered scale means every joint is read from the wrong
+    // anchor. Silence there would be worse than an error, because the result
+    // still looks like a person.
+    hal::TensorSet tensors;
+    PoseBranch branch(20);
+    branch.put(10, 10, 4.0f, 4);
+    branch.appendTo(tensors);
+    // The keypoint tensor claims three scales' worth of anchors.
+    appendFloat(tensors, "keypoints", {1, 17, 3, 8400},
+                std::vector<float>(static_cast<std::size_t>(17 * 3 * 8400), 0.0f));
+
+    auto decoded = vision::modelType("yolov8_pose")->decode(tensors, squareContext(640, 1));
+    VS_CHECK(!decoded.ok());
+    VS_CHECK(decoded.error().message.find("anchors") != std::string::npos);
+}
+
+VS_TEST(segmentation_paints_a_silhouette_inside_the_box_it_belongs_to) {
+    // Three scales of (box, score, coefficients) plus the proto basis.
+    hal::TensorSet tensors;
+    constexpr int kInput = 160;
+    constexpr int kCoefficients = 4;
+    const int grids[3] = {20, 10, 5};
+
+    for (int scale = 0; scale < 3; ++scale) {
+        const int grid = grids[scale];
+        const int cells = grid * grid;
+        std::vector<float> box(static_cast<std::size_t>(64 * cells), 0.0f);
+        std::vector<float> score(static_cast<std::size_t>(1 * cells), 0.0f);
+        std::vector<float> coefficients(static_cast<std::size_t>(kCoefficients * cells), 0.0f);
+
+        if (scale == 0) {
+            // Cell (10, 10) at stride 8: centre 84, four bins out is 32.
+            const int cell = 10 * grid + 10;
+            score[static_cast<std::size_t>(cell)] = 0.9f;
+            for (int side = 0; side < 4; ++side) {
+                box[static_cast<std::size_t>((side * 16 + 4) * cells + cell)] = 20.0f;
+            }
+            // Only basis 0 contributes.
+            coefficients[static_cast<std::size_t>(0 * cells + cell)] = 1.0f;
+        }
+
+        appendFloat(tensors, "box", {1, 64, grid, grid}, box);
+        appendFloat(tensors, "score", {1, 1, grid, grid}, score);
+        appendFloat(tensors, "coeff", {1, kCoefficients, grid, grid}, coefficients);
+    }
+
+    // The proto: basis 0 positive on the LEFT half of the input, negative on
+    // the right. So the silhouette must fill the left half of the box and
+    // nothing else.
+    constexpr int kProto = 40;   // a quarter of the input, as a real export is
+    std::vector<float> proto(static_cast<std::size_t>(kCoefficients * kProto * kProto), -1.0f);
+    for (int y = 0; y < kProto; ++y) {
+        for (int x = 0; x < kProto / 2; ++x) {
+            proto[static_cast<std::size_t>(y) * kProto + x] = 1.0f;
+        }
+    }
+    appendFloat(tensors, "proto", {1, kCoefficients, kProto, kProto}, proto);
+
+    vision::ModelContext context;
+    context.inputSize = core::Size{kInput, kInput};
+    context.sourceSize = core::Size{kInput, kInput};
+    context.contentRect = core::Rect{0, 0, kInput, kInput};
+    context.confidence = 0.25f;
+
+    const vision::ModelType* seg = vision::modelType("yolov8_seg");
+    VS_CHECK(seg != nullptr);
+    if (!seg) return;
+
+    auto decoded = seg->decode(tensors, context);
+    VS_CHECK(decoded.ok());
+    if (!decoded.ok() || decoded.value().empty()) return;
+    VS_CHECK_EQ(decoded.value().size(), std::size_t{1});
+
+    const vision::Detection& detection = decoded.value().front();
+    // 128 bytes: a 32x32 bitmap, which is what the wire format carries.
+    VS_CHECK_EQ(detection.maskBits.size(), std::size_t{128});
+    if (detection.maskBits.size() != 128) return;
+
+    // The box spans 52..116, and the proto is positive below x = 80. So the
+    // left 44% of the box's width is set and the rest is clear.
+    constexpr int kGrid = vision::Detection::kMaskGrid;
+    const auto bitAt = [&detection](int gx, int gy) {
+        const int bit = gy * kGrid + gx;
+        return (detection.maskBits[static_cast<std::size_t>(bit >> 3)] >> (bit & 7)) & 1u;
+    };
+    VS_CHECK(bitAt(0, 16) == 1u);
+    VS_CHECK(bitAt(5, 16) == 1u);
+    VS_CHECK(bitAt(kGrid - 1, 16) == 0u);
+    VS_CHECK(bitAt(kGrid - 2, 0) == 0u);
+}
+
+VS_TEST(segmentation_sends_no_mask_rather_than_an_empty_one) {
+    // 128 zero bytes would say "an empty silhouette" where the truth is "no
+    // silhouette" — and a viewer cannot tell those apart.
+    hal::TensorSet tensors;
+    constexpr int kInput = 160;
+    const int grids[3] = {20, 10, 5};
+    for (int scale = 0; scale < 3; ++scale) {
+        const int grid = grids[scale];
+        const int cells = grid * grid;
+        std::vector<float> box(static_cast<std::size_t>(64 * cells), 0.0f);
+        std::vector<float> score(static_cast<std::size_t>(cells), 0.0f);
+        std::vector<float> coefficients(static_cast<std::size_t>(4 * cells), 0.0f);
+        if (scale == 0) {
+            const int cell = 10 * grid + 10;
+            score[static_cast<std::size_t>(cell)] = 0.9f;
+            for (int side = 0; side < 4; ++side) {
+                box[static_cast<std::size_t>((side * 16 + 4) * cells + cell)] = 20.0f;
+            }
+            coefficients[static_cast<std::size_t>(cell)] = 1.0f;
+        }
+        appendFloat(tensors, "box", {1, 64, grid, grid}, box);
+        appendFloat(tensors, "score", {1, 1, grid, grid}, score);
+        appendFloat(tensors, "coeff", {1, 4, grid, grid}, coefficients);
+    }
+    // Every basis negative everywhere: nothing belongs to the object.
+    appendFloat(tensors, "proto", {1, 4, 40, 40},
+                std::vector<float>(static_cast<std::size_t>(4 * 40 * 40), -1.0f));
+
+    vision::ModelContext context;
+    context.inputSize = core::Size{kInput, kInput};
+    context.sourceSize = core::Size{kInput, kInput};
+    context.contentRect = core::Rect{0, 0, kInput, kInput};
+    context.confidence = 0.25f;
+
+    auto decoded = vision::modelType("yolov8_seg")->decode(tensors, context);
+    VS_CHECK(decoded.ok());
+    if (!decoded.ok() || decoded.value().empty()) return;
+    VS_CHECK(decoded.value().front().maskBits.empty());
+}
+
+VS_TEST(text_detection_merges_the_fragments_of_one_line_into_one_box) {
+    // DBNet outputs SHRUNK character regions, so a small or thin-stroked image
+    // gives one blob per character. A 128x110 plate measured 20 fragments, and
+    // handing each to the recogniser produced nothing at all.
+    constexpr int kMap = 40;
+    std::vector<float> map(static_cast<std::size_t>(kMap * kMap), 0.0f);
+    const auto fill = [&map](int x1, int y1, int x2, int y2) {
+        for (int y = y1; y < y2; ++y) {
+            for (int x = x1; x < x2; ++x) map[static_cast<std::size_t>(y) * kMap + x] = 1.0f;
+        }
+    };
+    // Three "characters" on one line, a pixel apart.
+    fill(5, 10, 9, 18);
+    fill(11, 10, 15, 18);
+    fill(17, 10, 21, 18);
+
+    hal::TensorSet tensors;
+    appendFloat(tensors, "prob", {1, 1, kMap, kMap}, map);
+
+    vision::ModelContext context;
+    context.inputSize = core::Size{160, 160};
+    context.sourceSize = core::Size{160, 160};
+    context.contentRect = core::Rect{0, 0, 160, 160};
+    context.confidence = 0.25f;
+
+    const vision::ModelType* det = vision::modelType("ppocr_det");
+    VS_CHECK(det != nullptr);
+    if (!det) return;
+
+    auto decoded = det->decode(tensors, context);
+    VS_CHECK(decoded.ok());
+    if (!decoded.ok()) return;
+    VS_CHECK_EQ(decoded.value().size(), std::size_t{1});
+    if (decoded.value().empty()) return;
+
+    // One box covering all three, at four times the map scale.
+    const vision::Detection& line = decoded.value().front();
+    VS_CHECK(line.x1 < 5.0f * 4.0f);
+    VS_CHECK(line.x2 > 20.0f * 4.0f);
+    VS_CHECK(line.score > 0.9f);
+}
+
+VS_TEST(text_detection_does_not_let_a_tall_stroke_swallow_the_line_beside_it) {
+    // A plate border or a table rule is tall and thin. Merging it with the text
+    // it encloses produced a single box covering the whole 128x110 picture.
+    constexpr int kMap = 40;
+    std::vector<float> map(static_cast<std::size_t>(kMap * kMap), 0.0f);
+    const auto fill = [&map](int x1, int y1, int x2, int y2) {
+        for (int y = y1; y < y2; ++y) {
+            for (int x = x1; x < x2; ++x) map[static_cast<std::size_t>(y) * kMap + x] = 1.0f;
+        }
+    };
+    fill(4, 2, 8, 36);     // the border: 34 tall, 4 wide
+    fill(12, 16, 20, 22);  // the text: 6 tall, well inside it
+
+    hal::TensorSet tensors;
+    appendFloat(tensors, "prob", {1, 1, kMap, kMap}, map);
+
+    vision::ModelContext context;
+    context.inputSize = core::Size{160, 160};
+    context.sourceSize = core::Size{160, 160};
+    context.contentRect = core::Rect{0, 0, 160, 160};
+    context.confidence = 0.25f;
+
+    auto decoded = vision::modelType("ppocr_det")->decode(tensors, context);
+    VS_CHECK(decoded.ok());
+    if (!decoded.ok()) return;
+    VS_CHECK_EQ(decoded.value().size(), std::size_t{2});
+}
+
+VS_TEST(text_recognition_collapses_ctc_blanks_and_repeats_into_characters) {
+    // The head emits one distribution per timestep; the same character held for
+    // three steps is one character, and the blank class is not one at all.
+    constexpr int kSteps = 8;
+    constexpr int kClasses = 5;   // blank + four dictionary entries
+    std::vector<float> head(static_cast<std::size_t>(kSteps * kClasses), 0.0f);
+    const auto emit = [&head](int step, int classId, float value) {
+        head[static_cast<std::size_t>(step) * kClasses + classId] = value;
+    };
+    emit(0, 0, 0.9f);   // blank
+    emit(1, 1, 0.9f);   // 'A'
+    emit(2, 1, 0.9f);   // 'A' again — the same character still being emitted
+    emit(3, 0, 0.9f);   // blank
+    emit(4, 1, 0.9f);   // 'A' again, but AFTER a blank, so a second one
+    emit(5, 2, 0.9f);   // 'B'
+    emit(6, 0, 0.9f);   // blank
+    emit(7, 3, 0.9f);   // 'C'
+
+    hal::TensorSet tensors;
+    appendFloat(tensors, "ctc", {1, kSteps, kClasses}, head);
+
+    vision::ModelContext context;
+    context.inputSize = core::Size{320, 48};
+    context.sourceSize = core::Size{320, 48};
+    context.contentRect = core::Rect{0, 0, 320, 48};
+    context.confidence = 0.25f;
+
+    const vision::ModelType* rec = vision::modelType("ppocr_rec");
+    VS_CHECK(rec != nullptr);
+    if (!rec) return;
+
+    auto decoded = rec->decode(tensors, context);
+    VS_CHECK(decoded.ok());
+    if (!decoded.ok()) return;
+    VS_CHECK_EQ(decoded.value().size(), std::size_t{4});
+    if (decoded.value().size() != 4) return;
+
+    // Class ids are dictionary rows, so the blank is already subtracted.
+    VS_CHECK_EQ(decoded.value()[0].classId, 0);
+    VS_CHECK_EQ(decoded.value()[1].classId, 0);
+    VS_CHECK_EQ(decoded.value()[2].classId, 1);
+    VS_CHECK_EQ(decoded.value()[3].classId, 2);
+
+    // The x of each character is its timestep, which is what lets a plate
+    // assembler sort them and split a two-line plate.
+    VS_CHECK(decoded.value()[0].x1 < decoded.value()[2].x1);
+    VS_CHECK(decoded.value()[2].x1 < decoded.value()[3].x1);
+}
+
+VS_TEST(text_recognition_reads_its_dictionary_from_beside_the_model) {
+    // Not compiled in: a recogniser trained on Vietnamese plates and one
+    // trained on Chinese receipts are the same code and different sidecars.
+    const std::string model = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") +
+                              "/visora_ppocr_test.rknn";
+    const std::string sidecar = model.substr(0, model.size() - 5) + ".txt";
+    {
+        std::ofstream out(sidecar);
+        out << "X\nY\nZ\n";
+    }
+
+    constexpr int kSteps = 3;
+    constexpr int kClasses = 4;
+    std::vector<float> head(static_cast<std::size_t>(kSteps * kClasses), 0.0f);
+    head[0 * kClasses + 1] = 0.9f;   // dictionary row 0 -> "X"
+    head[1 * kClasses + 3] = 0.9f;   // dictionary row 2 -> "Z"
+    head[2 * kClasses + 0] = 0.9f;   // blank
+
+    hal::TensorSet tensors;
+    appendFloat(tensors, "ctc", {1, kSteps, kClasses}, head);
+
+    vision::ModelContext context;
+    context.inputSize = core::Size{320, 48};
+    context.sourceSize = core::Size{320, 48};
+    context.contentRect = core::Rect{0, 0, 320, 48};
+    context.confidence = 0.25f;
+    context.modelPath = model;
+
+    auto decoded = vision::modelType("ppocr_rec")->decode(tensors, context);
+    VS_CHECK(decoded.ok());
+    if (!decoded.ok() || decoded.value().size() != 2) return;
+    VS_CHECK(decoded.value()[0].text == "X");
+    VS_CHECK(decoded.value()[1].text == "Z");
+    std::remove(sidecar.c_str());
+}
+
+VS_TEST(a_face_embedding_enriches_its_parent_and_detects_nothing) {
+    // It is not a detector, and says so by implementing only enrich(). Used as
+    // stage zero it produces nothing, which is the honest answer.
+    const vision::ModelType* face = vision::modelType("face_recognition");
+    VS_CHECK(face != nullptr);
+    if (!face) return;
+
+    std::vector<float> vector(512);
+    for (std::size_t i = 0; i < vector.size(); ++i) {
+        vector[i] = static_cast<float>(i) * 0.001f;
+    }
+    hal::TensorSet tensors;
+    appendFloat(tensors, "embedding", {1, 512}, vector);
+
+    vision::ModelContext context = squareContext(112, 1);
+
+    auto asDetector = face->decode(tensors, context);
+    VS_CHECK(asDetector.ok());
+    if (asDetector.ok()) VS_CHECK(asDetector.value().empty());
+
+    vision::Detection parent;
+    const core::Status enriched = face->enrich(tensors, context, parent);
+    VS_CHECK(enriched.ok());
+    VS_CHECK_EQ(parent.embedding.size(), std::size_t{512});
+    if (parent.embedding.size() == 512) {
+        // Raw, as the network produced it: whoever compares two faces
+        // normalises as part of the cosine similarity, and doing it here as
+        // well would be either redundant or silently wrong.
+        VS_CHECK(std::fabs(parent.embedding[100] - 0.1f) < 1e-4f);
+    }
+    VS_CHECK(parent.children.empty());
 }
 
 // --- motion ------------------------------------------------------------------

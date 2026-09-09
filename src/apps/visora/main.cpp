@@ -45,6 +45,7 @@
 #include "store/InMemoryCameraRepository.hpp"
 #include "store/InMemoryAiJobRepository.hpp"
 #include "store/InMemoryRecordingRepository.hpp"
+#include "store/PostgresAiJobRepository.hpp"
 #include "store/PostgresCameraRepository.hpp"
 #include "store/PostgresRecordingRepository.hpp"
 #include "vision/AiJobService.hpp"
@@ -114,10 +115,7 @@ Repositories makeRepositories(const visora::api::DatabaseConfig& config) {
     }
     return {std::make_shared<store::PostgresCameraRepository>(executor.value()),
             std::make_shared<store::PostgresRecordingRepository>(executor.value()),
-            // AI jobs stay in memory until the PostgreSQL adapter for them
-            // exists; they are re-created from the API rather than lost
-            // silently, and the warning below says so.
-            std::make_shared<store::InMemoryAiJobRepository>()};
+            std::make_shared<store::PostgresAiJobRepository>(executor.value())};
 }
 
 }  // namespace
@@ -207,8 +205,10 @@ int main(int argc, char** argv) {
         // Motion pushed to browsers as it happens, and written to the index
         // as one row per event — two different shapes of the same signal.
         auto motionFeed = std::make_shared<api::MotionEventFeed>();
-        auto motionEvents =
-            std::make_shared<media::MotionEventRecorder>(recordingRepository);
+        media::MotionEventRecorderConfig motionEventConfig;
+        motionEventConfig.snapshotDir = config.value().stream.motionSnapshotDir;
+        auto motionEvents = std::make_shared<media::MotionEventRecorder>(recordingRepository,
+                                                                        motionEventConfig);
 
         media::AiRuntimeConfig aiConfig;
         aiConfig.analyseFps = config.value().ai.analyseFps;
@@ -229,7 +229,7 @@ int main(int argc, char** argv) {
         // two own each other and neither would ever be destroyed.
         std::weak_ptr<media::CameraService> cameraServiceWeak;
         auto streams = std::make_shared<media::StreamManager>(
-            streamConfig, rtspServer,
+            streamConfig, rtspServer, sources,
             [&cameraServiceWeak, cameraStateFeed, recordings, aiRuntime, motionEvents](
                 const std::string& cameraId, const media::StreamStatus& status) {
                 media::CameraRuntimeFields fields;
@@ -285,22 +285,54 @@ int main(int argc, char** argv) {
         // domain does not know a streaming layer exists.
         media::CameraEvents events;
         events.added = [streams](const media::Camera& camera) { streams->apply(camera); };
-        events.changed = [streams, recordings](const media::Camera& camera,
-                                              const media::CameraDiff& diff) {
+        events.changed = [streams, recordings, aiRuntime, motionEvents](
+                             const media::Camera& camera, const media::CameraDiff& diff) {
+            // WHICH CODEC TO HAND ON, and why it is not always Unknown.
+            //
+            // Recording and the AI runtime both need the codec, and it is only
+            // known once the camera has been probed — so a change that moves
+            // the SOURCE must pass Unknown and wait for the re-probe, which
+            // arrives as a status report.
+            //
+            // But a camera whose source did NOT move is streaming right now
+            // with a codec already known, and passing Unknown for it was a bug
+            // worth naming: switching recording or motion on from the UI did
+            // nothing at all, silently, until something else happened to
+            // republish the camera or the process restarted. Nothing else
+            // reports a status for a camera that is already online and did not
+            // move, so the change simply evaporated.
+            const bool moved = diff.sourceChanged;
+            media::Codec live = media::Codec::Unknown;
+            if (!moved) {
+                if (const auto status = streams->statusOf(camera.id)) {
+                    if (status->state == media::CameraState::Online) live = status->codec;
+                }
+            }
+
             // Recording hears about every change and decides for itself: only a
             // source, mode or segment-length change rebuilds its pipeline, so a
             // rename does not discard the segment being written.
-            if (diff.recordingChanged || diff.sourceChanged) {
-                recordings->apply(camera, media::Codec::Unknown);
+            if (diff.recordingChanged || moved) recordings->apply(camera, live);
+
+            // Motion is the AI runtime's: it owns the decoder the detector
+            // rides on, and turning motion on has to reach it the same way.
+            if (diff.motionChanged || moved) {
+                aiRuntime->applyCamera(camera, live);
+                motionEvents->setSaving(camera.id, camera.motionSaveEvents);
             }
+
             // Only a change the pipeline cares about reaches the manager, and
             // the manager itself ignores one whose source did not move — so a
             // rename never drops a viewer.
-            if (diff.sourceChanged || diff.recordingChanged) streams->apply(camera);
+            if (moved || diff.recordingChanged) streams->apply(camera);
         };
-        events.removed = [streams, recordings, cameraStateFeed](const std::string& id) {
+        events.removed = [streams, recordings, aiRuntime, cameraStateFeed](
+                             const std::string& id) {
             streams->remove(id);
             recordings->remove(id);
+            // Without this the AI runtime keeps decoding a camera that no
+            // longer exists, and keeps a connection to it open.
+            aiRuntime->removeCamera(id);
             cameraStateFeed->broadcastRemoved(id);
         };
 
