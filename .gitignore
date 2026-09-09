@@ -1,0 +1,13 @@
+build/
+cmake-build-*/
+out/
+_deps/
+vcpkg_installed/
+.idea/
+.vscode/
+*.user
+.DS_Store
+weights/
+recordings/
+events/
+config/local.json
