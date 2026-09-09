@@ -24,6 +24,7 @@
 #include "api/controllers/WebRtcController.hpp"
 #include "api/controllers/WebSocketController.hpp"
 #include "api/ws/CameraStateFeed.hpp"
+#include "api/ws/MotionEventFeed.hpp"
 #include "core/Log.hpp"
 #include "core/Time.hpp"
 #include "hal/Capabilities.hpp"
@@ -35,6 +36,7 @@
 #include "media/recording/ThumbnailExtractor.hpp"
 #include "media/source/CameraSourceRegistry.hpp"
 #include "media/ai/AiRuntime.hpp"
+#include "media/ai/MotionEventRecorder.hpp"
 #include "media/moq/MoqService.hpp"
 #include "media/webrtc/WebRtcService.hpp"
 #include "media/stream/RtspServer.hpp"
@@ -202,6 +204,12 @@ int main(int argc, char** argv) {
         auto resultSinks = std::make_shared<vision::ResultSinkSet>();
         resultSinks->startAll();
 
+        // Motion pushed to browsers as it happens, and written to the index
+        // as one row per event — two different shapes of the same signal.
+        auto motionFeed = std::make_shared<api::MotionEventFeed>();
+        auto motionEvents =
+            std::make_shared<media::MotionEventRecorder>(recordingRepository);
+
         media::AiRuntimeConfig aiConfig;
         aiConfig.analyseFps = config.value().ai.analyseFps;
         auto aiRuntime = std::make_shared<media::AiRuntime>(aiConfig, sources, resultSinks);
@@ -209,6 +217,11 @@ int main(int argc, char** argv) {
         // only around events. Recording decides what to do with it.
         aiRuntime->setEventSink(
             [recordings](const std::string& cameraId) { recordings->noteEvent(cameraId); });
+        aiRuntime->setMotionSink(
+            [motionFeed, motionEvents](const media::MotionNotice& notice) {
+                motionFeed->publish(notice);
+                motionEvents->observe(notice);
+            });
 
 
         // The service is captured weakly on purpose: the manager's worker
@@ -217,7 +230,7 @@ int main(int argc, char** argv) {
         std::weak_ptr<media::CameraService> cameraServiceWeak;
         auto streams = std::make_shared<media::StreamManager>(
             streamConfig, rtspServer,
-            [&cameraServiceWeak, cameraStateFeed, recordings, aiRuntime](
+            [&cameraServiceWeak, cameraStateFeed, recordings, aiRuntime, motionEvents](
                 const std::string& cameraId, const media::StreamStatus& status) {
                 media::CameraRuntimeFields fields;
                 fields.state = status.state;
@@ -263,6 +276,7 @@ int main(int argc, char** argv) {
                                                       : media::Codec::Unknown;
                         recordings->apply(camera.value(), live);
                         aiRuntime->applyCamera(camera.value(), live);
+                        motionEvents->setSaving(cameraId, camera.value().motionSaveEvents);
                     }
                 }
             });
@@ -339,7 +353,10 @@ int main(int argc, char** argv) {
         // Everything already in the database starts streaming without waiting
         // for someone to touch the API.
         if (auto existing = cameras->list()) {
-            for (const media::Camera& camera : existing.value()) streams->apply(camera);
+            for (const media::Camera& camera : existing.value()) {
+                streams->apply(camera);
+                motionEvents->setSaving(camera.id, camera.motionSaveEvents);
+            }
             VS_INFO(kCategory) << "restored " << existing.value().size() << " camera(s)";
         }
 
@@ -368,8 +385,11 @@ int main(int argc, char** argv) {
         auto cameraStateHandler = oatpp::websocket::ConnectionHandler::createShared();
         cameraStateHandler->setSocketInstanceListener(
             std::make_shared<api::CameraStateInstanceListener>(cameraStateFeed));
-        router->addController(
-            api::WebSocketController::createShared(objectMapper, cameraStateHandler));
+        auto motionHandler = oatpp::websocket::ConnectionHandler::createShared();
+        motionHandler->setSocketInstanceListener(
+            std::make_shared<api::MotionInstanceListener>(motionFeed));
+        router->addController(api::WebSocketController::createShared(
+            objectMapper, cameraStateHandler, motionHandler));
 
         auto documentInfo =
             oatpp::swagger::DocumentInfo::Builder()
@@ -422,6 +442,7 @@ int main(int argc, char** argv) {
         // Websocket connections are held by their own handler and would keep
         // the process alive after the HTTP server stopped.
         cameraStateHandler->stop();
+        motionHandler->stop();
         // Recording first: it holds the shared sources and has to finalise
         // whatever segment it is writing. Then streams, whose worker touches
         // the camera service, which the repository outlives only until this
@@ -430,6 +451,9 @@ int main(int argc, char** argv) {
         // referenced cannot be closed.
         // AI first: its workers hold frame taps, which hold shared sources.
         aiRuntime->stop();
+        // An event left open reads as one that never ended, which is worse than
+        // one that ended when the program did.
+        motionEvents->closeAll();
         resultSinks->stopAll();
         moq->stop();
         webrtc->stop();

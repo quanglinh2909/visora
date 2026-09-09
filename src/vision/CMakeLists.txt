@@ -6,6 +6,7 @@ add_library(visora_vision STATIC
     AiJob.cpp
     AiJobService.cpp
     ModelType.cpp
+    MotionDetector.cpp
     StageRunner.cpp
     ResultSink.cpp
     ResultWire.cpp

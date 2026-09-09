@@ -109,7 +109,8 @@ RK3588 board.
 | 8a | Vision domain: stage trees, model types, transforms, YOLOv8 decode | done |
 | 8b | AI runtime, jobs, REST surface | done |
 | 8c | ONNX Runtime backend | done |
-| 8d | Motion detection, `/ws/motion-events`, more model types | next |
+| 8d | Motion detection, motion events, `/ws/motion-events` | done |
+| 9 | Cutover: run both against the same cameras and database, compare | next |
 | 9 | Cutover: run both against the same cameras and database, compare, then retire `gstreamer_c` | |
 
 Step 3 came before the pipeline work on purpose. Locking the external contract
@@ -128,6 +129,8 @@ Runnable today, on x86_64 and on RK3588:
   play back as HLS with byte-range seeking, a scrub thumbnail and day-based
   retention. Verified against a real PostgreSQL and decoded end to end by
   ffmpeg.
+- Motion is detected on the frames the AI pipeline already decoded, pushed to
+  browsers live and written to the index as one row per event.
 - AI jobs run on cameras and publish results to the socket
   `gstreamer_ai_python` reads. Verified end to end with the REAL consumer:
   60 frames analysed, 60 results published, every message parsed, boxes
@@ -152,7 +155,7 @@ Runnable today, on x86_64 and on RK3588:
   produces real results until step 8.
 - Ten test suites, all passing on both architectures.
 
-Not yet ported: motion detection, and the model types beyond YOLOv8 detection
+Not yet ported: the model types beyond YOLOv8 detection
 (pose, segmentation, face recognition, the PP-OCR family). Each is now one
 file — see `vision/models/Yolov8Detect.cpp` for the shape.
 

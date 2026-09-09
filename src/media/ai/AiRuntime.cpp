@@ -1,6 +1,7 @@
 #include "media/ai/AiRuntime.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
@@ -11,6 +12,37 @@ namespace visora::media {
 namespace {
 
 constexpr const char* kCategory = "ai";
+
+// Splits the moved cells by whether any drawn zone covers them.
+void splitByZones(const std::string& cells, const std::vector<vision::MotionZone>& zones,
+                  std::string& inside, std::string& outside) {
+    std::size_t at = 0;
+    while (at <= cells.size()) {
+        const auto comma = cells.find(',', at);
+        const std::string token =
+            cells.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+        if (!token.empty()) {
+            const auto colon = token.find(':');
+            if (colon != std::string::npos) {
+                const int row = std::atoi(token.c_str());
+                const int column = std::atoi(token.c_str() + colon + 1);
+                bool covered = false;
+                for (const vision::MotionZone& zone : zones) {
+                    if (row >= zone.row1 && row <= zone.row2 && column >= zone.col1 &&
+                        column <= zone.col2) {
+                        covered = true;
+                        break;
+                    }
+                }
+                std::string& target = covered ? inside : outside;
+                if (!target.empty()) target += ',';
+                target += token;
+            }
+        }
+        if (comma == std::string::npos) break;
+        at = comma + 1;
+    }
+}
 
 }  // namespace
 
@@ -149,13 +181,6 @@ struct AiRuntime::Worker {
     }
 };
 
-// One camera's decoder, shared by every job on it.
-struct AiRuntime::CameraEntry {
-    Camera camera;
-    Codec codec = Codec::Unknown;
-    std::shared_ptr<FrameTap> tap;
-};
-
 AiRuntime::AiRuntime(AiRuntimeConfig config, std::shared_ptr<CameraSourceRegistry> sources,
                      std::shared_ptr<vision::ResultSinkSet> sinks)
     : m_config(config), m_sources(std::move(sources)), m_sinks(std::move(sinks)) {}
@@ -215,15 +240,102 @@ std::shared_ptr<FrameTap> AiRuntime::tapFor(const std::string& cameraId) {
     return tap;
 }
 
+void AiRuntime::updateMotion(CameraEntry& entry) {
+    // Caller holds the lock.
+    const bool wanted = entry.camera.motionEnabled && entry.tap && entry.tap->running();
+
+    if (!wanted) {
+        if (entry.tap && entry.motionSinkId != 0) entry.tap->removeSink(entry.motionSinkId);
+        entry.motionSinkId = 0;
+        entry.motion.reset();
+        return;
+    }
+    if (entry.motionSinkId != 0) return;  // already attached
+
+    vision::MotionGrid grid;
+    grid.columns = entry.camera.motionGridX;
+    grid.rows = entry.camera.motionGridY;
+    entry.motion = std::make_shared<vision::MotionDetector>(grid);
+    entry.zones = vision::parseMotionZones(entry.camera.motionZones);
+
+    const std::string cameraId = entry.camera.id;
+    auto motion = entry.motion;
+    const auto zones = entry.zones;
+    auto onMotion = m_onMotion;
+    auto onEvent = m_onEvent;
+
+    // How long an event stays open after the last frame that triggered it.
+    //
+    // Without this, one continuously moving object produces a burst of
+    // start/end pairs: measured on a moving ball, ten of them in twelve
+    // seconds, because between frames it does not always shift enough cells to
+    // reach the level. An operator means one event, and the post-motion setting
+    // they already configured is exactly the right length — it is what they
+    // asked to keep recording for.
+    const std::int64_t holdMs =
+        static_cast<std::int64_t>(std::max(0, entry.camera.postMotionSeconds)) * 1000;
+    auto lastTriggerMs = std::make_shared<std::atomic<std::int64_t>>(0);
+
+    entry.motionSinkId = entry.tap->addSink(
+        [cameraId, motion, zones, grid, onMotion, onEvent, holdMs,
+         lastTriggerMs](const core::ImageView& frame, std::int64_t) {
+            // On the decoder's thread, and cheap enough to belong there: one
+            // subtraction per sampled point over a fixed 160x120 grid.
+            const std::string cells = motion->analyse(frame, {});
+            MotionNotice notice;
+            notice.cameraId = cameraId;
+            notice.cells = cells;
+            notice.gridX = grid.columns;
+            notice.gridY = grid.rows;
+            const bool firing = vision::zonesTriggered(cells, zones, grid);
+            const std::int64_t nowMs = core::nowEpochMs();
+            if (firing) lastTriggerMs->store(nowMs);
+            const std::int64_t since = lastTriggerMs->load();
+            notice.triggered = firing || (since != 0 && nowMs - since < holdMs);
+            splitByZones(cells, zones, notice.insideCells, notice.outsideCells);
+
+            if (onMotion) onMotion(notice);
+            // Only a triggering FRAME feeds the recording gate, not the whole
+            // held window: the gate has its own pre- and post-roll, and telling
+            // it repeatedly for one event would be noise.
+            if (firing && onEvent) onEvent(cameraId);
+        });
+
+    VS_INFO(kCategory) << cameraId << ": motion detection on (" << grid.columns << 'x'
+                       << grid.rows << " grid, " << zones.size() << " zone(s), " << holdMs
+                       << "ms hold)";
+}
+
 void AiRuntime::applyCamera(const Camera& camera, Codec codec) {
     std::vector<std::string> toRestart;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         CameraEntry& entry = m_cameras[camera.id];
         const bool changed = entry.codec != codec || entry.camera.inputRtsp != camera.inputRtsp;
+        const bool motionChanged = entry.camera.motionEnabled != camera.motionEnabled ||
+                                   entry.camera.motionZones != camera.motionZones ||
+                                   entry.camera.motionGridX != camera.motionGridX ||
+                                   entry.camera.motionGridY != camera.motionGridY;
         entry.camera = camera;
         entry.codec = codec;
-        if (!changed) return;
+
+        if (!changed) {
+            if (motionChanged) {
+                // Rebuild the detector for the new grid or zones, without
+                // touching the decoder or any job.
+                if (entry.tap && entry.motionSinkId != 0) {
+                    entry.tap->removeSink(entry.motionSinkId);
+                }
+                entry.motionSinkId = 0;
+                entry.motion.reset();
+                updateMotion(entry);
+            }
+            // Motion alone can need a decoder that no job asked for.
+            if (camera.motionEnabled && !entry.tap && codec != Codec::Unknown) {
+                if (tapFor(camera.id)) updateMotion(entry);
+            }
+            return;
+        }
 
         // The decoder was built for the old stream. Drop it; the next job that
         // needs one builds it again.
@@ -231,11 +343,22 @@ void AiRuntime::applyCamera(const Camera& camera, Codec codec) {
             entry.tap->stop();
             entry.tap.reset();
         }
+        entry.motionSinkId = 0;
+        entry.motion.reset();
         for (const auto& [jobId, worker] : m_workers) {
             if (worker->job.cameraId == camera.id) toRestart.push_back(jobId);
         }
     }
     for (const std::string& jobId : toRestart) restartJob(jobId);
+
+    // Motion may need a decoder even with no jobs at all: a camera can be set
+    // to record on motion without anything analysing it.
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto it = m_cameras.find(camera.id);
+    if (it == m_cameras.end()) return;
+    if (it->second.camera.motionEnabled && codec != Codec::Unknown) {
+        if (tapFor(camera.id)) updateMotion(it->second);
+    }
 }
 
 void AiRuntime::applyJob(const vision::AiJob& job) {

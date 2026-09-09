@@ -12,6 +12,7 @@ add_library(visora_api STATIC
     mappers/RecordingMapper.cpp
     mappers/StreamStatusMapper.cpp
     ws/CameraStateFeed.cpp
+    ws/MotionEventFeed.cpp
 )
 add_library(visora::api ALIAS visora_api)
 

@@ -27,15 +27,19 @@ namespace visora::api {
 class WebSocketController : public oatpp::web::server::api::ApiController {
 public:
     WebSocketController(std::shared_ptr<ObjectMapper> objectMapper,
-                        std::shared_ptr<oatpp::network::ConnectionHandler> cameraStateHandler)
+                        std::shared_ptr<oatpp::network::ConnectionHandler> cameraStateHandler,
+                        std::shared_ptr<oatpp::network::ConnectionHandler> motionHandler)
         : oatpp::web::server::api::ApiController(std::move(objectMapper)),
-          m_cameraStateHandler(std::move(cameraStateHandler)) {}
+          m_cameraStateHandler(std::move(cameraStateHandler)),
+          m_motionHandler(std::move(motionHandler)) {}
 
     static std::shared_ptr<WebSocketController> createShared(
         std::shared_ptr<ObjectMapper> objectMapper,
-        std::shared_ptr<oatpp::network::ConnectionHandler> cameraStateHandler) {
+        std::shared_ptr<oatpp::network::ConnectionHandler> cameraStateHandler,
+        std::shared_ptr<oatpp::network::ConnectionHandler> motionHandler) {
         return std::make_shared<WebSocketController>(std::move(objectMapper),
-                                                     std::move(cameraStateHandler));
+                                                     std::move(cameraStateHandler),
+                                                     std::move(motionHandler));
     }
 
     ENDPOINT("GET", "/ws/camera-state", cameraState,
@@ -44,8 +48,17 @@ public:
                                                                  m_cameraStateHandler);
     }
 
+    // Motion, with the moved cells. A client sends a camera id to receive the
+    // per-frame messages for it; events arrive whatever it is watching.
+    ENDPOINT("GET", "/ws/motion-events", motionEvents,
+             REQUEST(std::shared_ptr<IncomingRequest>, request)) {
+        return oatpp::websocket::Handshaker::serversideHandshake(request->getHeaders(),
+                                                                 m_motionHandler);
+    }
+
 private:
     std::shared_ptr<oatpp::network::ConnectionHandler> m_cameraStateHandler;
+    std::shared_ptr<oatpp::network::ConnectionHandler> m_motionHandler;
 };
 
 }  // namespace visora::api

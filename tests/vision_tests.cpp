@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "vision/ModelType.hpp"
+#include "vision/MotionDetector.hpp"
 #include "vision/StageRunner.hpp"
 #include "vision/Transform.hpp"
 
@@ -295,6 +296,173 @@ VS_TEST(several_scales_are_all_decoded) {
     auto decoded = vision::modelType("yolov8_detect")->decode(tensors, squareContext(640, 4));
     VS_CHECK(decoded.ok());
     if (decoded.ok()) VS_CHECK_EQ(decoded.value().size(), std::size_t{3});
+}
+
+// --- motion ------------------------------------------------------------------
+
+namespace {
+
+bool contains(const std::string& haystack, const std::string& needle) {
+    return haystack.find(needle) != std::string::npos;
+}
+
+// A packed RGB frame filled with one grey, so a change can be introduced
+// exactly where the test wants it.
+struct TestFrame {
+    int width, height;
+    std::vector<std::uint8_t> pixels;
+
+    TestFrame(int w, int h, std::uint8_t value) : width(w), height(h) {
+        pixels.assign(static_cast<std::size_t>(w) * h * 3, value);
+    }
+
+    void fillRect(int x, int y, int w, int h, std::uint8_t value) {
+        for (int row = y; row < y + h && row < height; ++row) {
+            for (int column = x; column < x + w && column < width; ++column) {
+                const std::size_t at = (static_cast<std::size_t>(row) * width + column) * 3;
+                pixels[at] = pixels[at + 1] = pixels[at + 2] = value;
+            }
+        }
+    }
+
+    core::ImageView view() const {
+        return core::ImageView::packed(core::PixelFormat::RGB888,
+                                       core::Size{width, height}, pixels.data());
+    }
+};
+
+}  // namespace
+
+VS_TEST(the_first_frame_can_only_be_recorded_not_judged) {
+    // There is nothing to compare it against, and reporting motion for it would
+    // make every camera fire the moment it starts.
+    vision::MotionDetector detector({8, 8});
+    TestFrame frame(320, 240, 100);
+    VS_CHECK(!detector.primed());
+    VS_CHECK(detector.analyse(frame.view(), {}).empty());
+    VS_CHECK(detector.primed());
+}
+
+VS_TEST(a_still_scene_reports_nothing) {
+    vision::MotionDetector detector({8, 8});
+    TestFrame frame(320, 240, 100);
+    detector.analyse(frame.view(), {});
+    VS_CHECK(detector.analyse(frame.view(), {}).empty());
+}
+
+VS_TEST(sensor_noise_below_the_threshold_is_not_motion) {
+    // Every camera has it, and without a floor the whole grid lights up at
+    // night — which is how a motion feature becomes one nobody leaves on.
+    vision::MotionDetector detector({8, 8});
+    TestFrame first(320, 240, 100);
+    detector.analyse(first.view(), {});
+
+    TestFrame second(320, 240, 100 + vision::kMotionPixelDelta - 2);
+    VS_CHECK(detector.analyse(second.view(), {}).empty());
+}
+
+VS_TEST(something_moving_reports_the_cells_it_moved_in) {
+    vision::MotionDetector detector({8, 8});
+    TestFrame first(320, 240, 100);
+    detector.analyse(first.view(), {});
+
+    // A bright block in the top-left eighth of the frame: cell 0:0.
+    TestFrame second(320, 240, 100);
+    second.fillRect(0, 0, 40, 30, 255);
+    const std::string cells = detector.analyse(second.view(), {});
+    VS_CHECK(!cells.empty());
+    VS_CHECK(contains(cells, "0:0"));
+    // And not the far corner.
+    VS_CHECK(!contains(cells, "7:7"));
+}
+
+VS_TEST(the_grid_is_laid_over_the_picture_not_over_the_letterbox_padding) {
+    // Otherwise the edge cells never move, and the zones an operator drew on
+    // the picture sit over the wrong cells.
+    vision::MotionDetector detector({4, 4});
+
+    // A 320x240 picture inside a 320x320 frame, padding above and below.
+    TestFrame first(320, 320, 0);
+    first.fillRect(0, 40, 320, 240, 100);
+    detector.analyse(first.view(), core::Rect{0, 40, 320, 240});
+
+    // Something moves at the very TOP of the picture, which is y=40 in the
+    // frame. With the grid over the picture that is row 0.
+    TestFrame second(320, 320, 0);
+    second.fillRect(0, 40, 320, 240, 100);
+    second.fillRect(0, 40, 80, 60, 255);
+    const std::string cells = detector.analyse(second.view(), core::Rect{0, 40, 320, 240});
+    VS_CHECK(contains(cells, "0:0"));
+}
+
+VS_TEST(nv12_is_read_straight_from_the_y_plane) {
+    // What a hardware decoder produces, and the Y plane already IS luminance —
+    // so this is the format that costs nothing. The predecessor spent 15% of a
+    // core per 1080p camera converting frames for its motion branch.
+    const int width = 320;
+    const int height = 240;
+    const std::size_t ySize = static_cast<std::size_t>(width) * height;
+
+    std::vector<std::uint8_t> first(ySize + ySize / 2, 128);
+    std::vector<std::uint8_t> second = first;
+    // A bright block in the top-left eighth of the Y plane.
+    for (int row = 0; row < 30; ++row) {
+        for (int column = 0; column < 40; ++column) {
+            second[static_cast<std::size_t>(row) * width + column] = 255;
+        }
+    }
+
+    const auto viewOf = [&](const std::vector<std::uint8_t>& bytes) {
+        return core::ImageView::packed(core::PixelFormat::NV12,
+                                       core::Size{width, height}, bytes.data());
+    };
+
+    vision::MotionDetector detector({8, 8});
+    VS_CHECK(detector.analyse(viewOf(first), {}).empty());
+    const std::string cells = detector.analyse(viewOf(second), {});
+    VS_CHECK(contains(cells, "0:0"));
+    VS_CHECK(!contains(cells, "7:7"));
+}
+
+VS_TEST(a_camera_with_no_zones_never_fires) {
+    // Deliberate. The predecessor measured 11 of 12 cameras with empty zones,
+    // every one running the whole motion branch and discarding every result.
+    VS_CHECK(!vision::zonesTriggered("0:0,0:1,1:0,1:1", {}, {8, 8}));
+}
+
+VS_TEST(a_zones_level_is_relative_to_the_zone_not_to_the_frame) {
+    // So a small zone stays as sensitive as a large one.
+    vision::MotionGrid grid{10, 10};
+
+    // A zone of 2x2 = 4 cells at level 5, so half its cells must move.
+    std::vector<vision::MotionZone> zone{{0, 0, 1, 1, 5}};
+    VS_CHECK(!vision::zonesTriggered("0:0", zone, grid));         // 1 of 4
+    VS_CHECK(vision::zonesTriggered("0:0,0:1", zone, grid));      // 2 of 4
+
+    // Motion outside the zone does not count, however much of it there is.
+    VS_CHECK(!vision::zonesTriggered("9:9,8:8,7:7,6:6", zone, grid));
+}
+
+VS_TEST(zone_json_that_cannot_be_read_makes_a_camera_quiet_not_noisy) {
+    const auto good = vision::parseMotionZones(
+        R"([{"r1":1,"c1":2,"r2":3,"c2":4,"level":7}])");
+    VS_CHECK_EQ(good.size(), std::size_t{1});
+    if (!good.empty()) {
+        VS_CHECK_EQ(good[0].row1, 1);
+        VS_CHECK_EQ(good[0].col2, 4);
+        VS_CHECK_EQ(good[0].level, 7);
+    }
+
+    // Reversed corners are normalised rather than producing an empty zone.
+    const auto reversed = vision::parseMotionZones(R"([{"r1":5,"c1":5,"r2":1,"c2":1}])");
+    VS_CHECK_EQ(reversed.size(), std::size_t{1});
+    if (!reversed.empty()) VS_CHECK_EQ(reversed[0].row1, 1);
+
+    // Nothing readable means no zones, which means the camera does not fire —
+    // the safe direction.
+    VS_CHECK(vision::parseMotionZones("").empty());
+    VS_CHECK(vision::parseMotionZones("not json at all").empty());
+    VS_CHECK(vision::parseMotionZones("[]").empty());
 }
 
 VS_MAIN()
