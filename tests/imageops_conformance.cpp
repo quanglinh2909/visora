@@ -9,7 +9,7 @@
 // Run it on each machine you care about. On a board it is the difference between
 // "the accelerator is wired up" and "the accelerator is correct".
 
-#include "TestHarness.hpp"
+#include "IsolatedRunner.hpp"
 
 #include <cstring>
 #include <memory>
@@ -328,4 +328,4 @@ VS_TEST(rgb_to_nv12_and_back) {
     }
 }
 
-VS_MAIN()
+VS_MAIN_ISOLATED()
