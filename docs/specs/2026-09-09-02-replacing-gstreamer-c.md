@@ -79,7 +79,8 @@ RK3588 board.
 | 3 | **Result contract**: result types, wire format, `ResultSink` registry, Unix-socket sink | **done, verified against the real Python consumer** |
 | 4 | Codec HAL: `CodecProvider`, `ElementSpec`, `LaunchPipeline`; providers for rockchip / nvidia / intel / v4l2 / software; camera restream pipeline | done, verified on hardware |
 | 5a | Camera domain, repository port, service, in-memory + PostgreSQL adapters, camera REST, config, server | done |
-| 5b | RTSP source, session lifecycle, state websocket | next |
+| 5b | RTSP restream runtime: shared server, codec probe, retry with backoff, status reported back | done |
+| 5c | Camera state websocket, stream start/stop/restart endpoints, snapshot, thumbnail | next |
 | 6 | Recording and playback: segments, motion triggering, HLS, range requests, playback sessions | |
 | 7 | WebRTC and MoQ restream | |
 | 8 | Vision: model catalog, stages, transforms, AI job pipeline, ONNX Runtime backend | |
@@ -88,6 +89,22 @@ RK3588 board.
 Step 3 came before the pipeline work on purpose. Locking the external contract
 first means everything underneath can be rewritten without wondering whether a
 separately deployed consumer still works — the test answers it.
+
+## Where it stands
+
+Runnable today, on x86_64 and on RK3588:
+
+- `visora-probe` reports what the machine can do.
+- `visora` serves the camera REST API with Swagger UI, keeps every camera
+  restreaming over RTSP, probes each one's codec, retries unreachable cameras
+  with exponential backoff, and writes runtime state back to the row.
+- Results published to `/tmp/ai_engine.sock` are byte-compatible with
+  `gstreamer_ai_python`, verified against the real consumer — though nothing
+  produces real results until step 8.
+- Ten test suites, all passing on both architectures.
+
+Not yet ported, and the reason to keep running `gstreamer_c` in production:
+recording, playback, WebRTC, MoQ and the entire AI pipeline.
 
 ## Extension points the replacement adds
 
