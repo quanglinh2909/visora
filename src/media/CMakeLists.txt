@@ -11,6 +11,7 @@ pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET
 )
 
 add_library(visora_media STATIC
+    gst/BusWatcher.cpp
     gst/Codec.cpp
     gst/CodecProvider.cpp
     gst/ElementAvailability.cpp
@@ -18,6 +19,15 @@ add_library(visora_media STATIC
     gst/LaunchPipeline.cpp
     pipeline/CameraPipelines.cpp
     camera/Camera.cpp
+    recording/Recording.cpp
+    recording/HlsPlaylist.cpp
+    recording/MotionGate.cpp
+    recording/PlaybackService.cpp
+    recording/RecordingManager.cpp
+    recording/RecordingSession.cpp
+    recording/ThumbnailExtractor.cpp
+    source/CameraSourceRegistry.cpp
+    source/RtspEncodedSource.cpp
     camera/CameraRuntime.cpp
     camera/CameraService.cpp
     stream/CodecProbe.cpp

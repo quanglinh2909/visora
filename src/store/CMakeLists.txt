@@ -5,12 +5,16 @@
 # no PostgreSQL.
 add_library(visora_store STATIC
     InMemoryCameraRepository.cpp
+    InMemoryRecordingRepository.cpp
 )
 add_library(visora::store ALIAS visora_store)
 target_link_libraries(visora_store PUBLIC visora::media)
 
 if(VISORA_WITH_API)
-    target_sources(visora_store PRIVATE PostgresCameraRepository.cpp)
+    target_sources(visora_store PRIVATE
+        PostgresCameraRepository.cpp
+        PostgresRecordingRepository.cpp
+    )
     # PUBLIC on purpose: the header exposes oatpp types, so anything that
     # constructs this adapter needs them. Nothing else in the domain does.
     target_link_libraries(visora_store PUBLIC oatpp::oatpp oatpp::oatpp-postgresql)

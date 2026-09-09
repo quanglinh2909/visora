@@ -4,9 +4,11 @@
 # No business logic, no SQL. That is what keeps the rules testable without a
 # server and the storage swappable without touching the rules.
 add_library(visora_api STATIC
+    ByteRange.cpp
     Config.cpp
     HttpError.cpp
     mappers/CameraMapper.cpp
+    mappers/RecordingMapper.cpp
     mappers/StreamStatusMapper.cpp
     ws/CameraStateFeed.cpp
 )

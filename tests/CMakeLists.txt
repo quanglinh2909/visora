@@ -62,6 +62,15 @@ target_link_libraries(runtime_tests PRIVATE visora::store visora::backends)
 target_include_directories(runtime_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME runtime_tests COMMAND runtime_tests)
 
+# The recording timeline: instants, segment arithmetic, the HLS playlist and
+# HTTP range parsing. All pure — no camera, no disk, no database.
+if(VISORA_WITH_API)
+    add_executable(recording_tests recording_tests.cpp)
+    target_link_libraries(recording_tests PRIVATE visora::store visora::api)
+    target_include_directories(recording_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME recording_tests COMMAND recording_tests)
+endif()
+
 if(VISORA_WITH_API)
     # The HTTP adapter: DTO mapping and error translation. No server, no database.
     add_executable(api_tests api_tests.cpp)

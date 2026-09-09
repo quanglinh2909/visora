@@ -18,6 +18,7 @@
 #include "api/Config.hpp"
 #include "api/controllers/CameraController.hpp"
 #include "api/controllers/CameraStreamController.hpp"
+#include "api/controllers/PlaybackController.hpp"
 #include "api/controllers/WebSocketController.hpp"
 #include "api/ws/CameraStateFeed.hpp"
 #include "core/Log.hpp"
@@ -26,11 +27,17 @@
 #include "media/camera/CameraRuntime.hpp"
 #include "media/camera/CameraService.hpp"
 #include "media/gst/CodecProvider.hpp"
+#include "media/recording/PlaybackService.hpp"
+#include "media/recording/RecordingManager.hpp"
+#include "media/recording/ThumbnailExtractor.hpp"
+#include "media/source/CameraSourceRegistry.hpp"
 #include "media/stream/RtspServer.hpp"
 #include "media/stream/SnapshotGrabber.hpp"
 #include "media/stream/StreamManager.hpp"
 #include "store/InMemoryCameraRepository.hpp"
+#include "store/InMemoryRecordingRepository.hpp"
 #include "store/PostgresCameraRepository.hpp"
+#include "store/PostgresRecordingRepository.hpp"
 
 #include "oatpp-swagger/Controller.hpp"
 #include "oatpp-websocket/ConnectionHandler.hpp"
@@ -55,17 +62,31 @@ void onSignal(int) {
     if (g_server) g_server->stop();
 }
 
-// Chooses where cameras live. An empty database URL is a supported
-// configuration, not a misconfiguration: it is how a bring-up on new hardware
-// starts, before PostgreSQL is one more thing that can be wrong.
-std::shared_ptr<visora::media::CameraRepository> makeCameraRepository(
-    const visora::api::DatabaseConfig& config) {
+// Where cameras and recordings live.
+//
+// Both come from one place because they share one connection pool: two pools
+// against the same database would double the connections for no benefit, and a
+// deployment where cameras persist but recordings do not is not a configuration
+// anyone wants.
+//
+// An empty database URL is a supported configuration, not a misconfiguration:
+// it is how a bring-up on new hardware starts, before PostgreSQL is one more
+// thing that can be wrong.
+struct Repositories {
+    std::shared_ptr<visora::media::CameraRepository> cameras;
+    std::shared_ptr<visora::media::RecordingRepository> recordings;
+    bool ok() const { return cameras != nullptr && recordings != nullptr; }
+};
+
+Repositories makeRepositories(const visora::api::DatabaseConfig& config) {
     using namespace visora;
 
     if (!config.enabled()) {
-        VS_WARN(kCategory) << "no database configured; cameras are kept in memory "
-                              "and will not survive a restart";
-        return std::make_shared<store::InMemoryCameraRepository>();
+        VS_WARN(kCategory) << "no database configured; cameras and the recording index "
+                              "are kept in memory and will not survive a restart "
+                              "(recorded FILES do survive, but nothing will index them)";
+        return {std::make_shared<store::InMemoryCameraRepository>(),
+                std::make_shared<store::InMemoryRecordingRepository>()};
     }
 
     auto executor = store::makePostgresExecutor(config.url, config.poolMaxConnections,
@@ -74,9 +95,10 @@ std::shared_ptr<visora::media::CameraRepository> makeCameraRepository(
         // Deliberately fatal. Falling back to memory would look like it worked
         // and quietly lose every camera the operator adds.
         VS_ERROR(kCategory) << "database unavailable: " << executor.error().str();
-        return nullptr;
+        return {};
     }
-    return std::make_shared<store::PostgresCameraRepository>(executor.value());
+    return {std::make_shared<store::PostgresCameraRepository>(executor.value()),
+            std::make_shared<store::PostgresRecordingRepository>(executor.value())};
 }
 
 }  // namespace
@@ -116,11 +138,12 @@ int main(int argc, char** argv) {
     oatpp::base::Environment::init();
     int exitCode = 0;
     {
-        auto repository = makeCameraRepository(config.value().database);
-        if (!repository) {
+        const Repositories repositories = makeRepositories(config.value().database);
+        if (!repositories.ok()) {
             oatpp::base::Environment::destroy();
             return 1;
         }
+        auto repository = repositories.cameras;
 
         auto rtspServer = std::make_shared<media::RtspServer>(
             config.value().stream.rtspHost, config.value().stream.rtspPort);
@@ -143,14 +166,28 @@ int main(int argc, char** argv) {
         // pushes into it.
         auto cameraStateFeed = std::make_shared<api::CameraStateFeed>();
 
+        // One connection per camera, shared by recording and — from step 7 —
+        // by WebRTC and the AI pipeline. A camera permits only a handful of
+        // simultaneous streams, so this is a constraint rather than a saving.
+        media::RtspSourceOptions sourceOptions;
+        sourceOptions.latencyMs = config.value().stream.sourceLatencyMs;
+        auto sources = std::make_shared<media::CameraSourceRegistry>(sourceOptions);
+
+        auto recordingRepository = repositories.recordings;
+
+        media::RecordingManagerConfig recordingConfig;
+        recordingConfig.recordingDir = config.value().stream.recordingDir;
+        auto recordings = std::make_shared<media::RecordingManager>(
+            recordingConfig, recordingRepository, sources);
+
         // The service is captured weakly on purpose: the manager's worker
         // thread outlives nothing here, but a strong reference would make the
         // two own each other and neither would ever be destroyed.
         std::weak_ptr<media::CameraService> cameraServiceWeak;
         auto streams = std::make_shared<media::StreamManager>(
             streamConfig, rtspServer,
-            [&cameraServiceWeak, cameraStateFeed](const std::string& cameraId,
-                                                  const media::StreamStatus& status) {
+            [&cameraServiceWeak, cameraStateFeed, recordings](
+                const std::string& cameraId, const media::StreamStatus& status) {
                 media::CameraRuntimeFields fields;
                 fields.state = status.state;
                 fields.codec = status.codec;
@@ -183,20 +220,41 @@ int main(int argc, char** argv) {
                 push.lastChangedAt = fields.lastChangedAt;
                 push.streaming = status.desired;
                 cameraStateFeed->broadcast(push);
+
+                // Recording follows the stream rather than the row: the codec
+                // is only known once the camera has been probed, and a
+                // recording pipeline built for the wrong codec fails in a way
+                // that looks like a broken camera.
+                if (auto service = cameraServiceWeak.lock()) {
+                    if (auto camera = service->get(cameraId)) {
+                        recordings->apply(camera.value(),
+                                          status.state == media::CameraState::Online
+                                              ? status.codec
+                                              : media::Codec::Unknown);
+                    }
+                }
             });
 
         // Events are callbacks so the dependency points one way: the camera
         // domain does not know a streaming layer exists.
         media::CameraEvents events;
         events.added = [streams](const media::Camera& camera) { streams->apply(camera); };
-        events.changed = [streams](const media::Camera& camera, const media::CameraDiff& diff) {
+        events.changed = [streams, recordings](const media::Camera& camera,
+                                              const media::CameraDiff& diff) {
+            // Recording hears about every change and decides for itself: only a
+            // source, mode or segment-length change rebuilds its pipeline, so a
+            // rename does not discard the segment being written.
+            if (diff.recordingChanged || diff.sourceChanged) {
+                recordings->apply(camera, media::Codec::Unknown);
+            }
             // Only a change the pipeline cares about reaches the manager, and
             // the manager itself ignores one whose source did not move — so a
             // rename never drops a viewer.
             if (diff.sourceChanged || diff.recordingChanged) streams->apply(camera);
         };
-        events.removed = [streams, cameraStateFeed](const std::string& id) {
+        events.removed = [streams, recordings, cameraStateFeed](const std::string& id) {
             streams->remove(id);
+            recordings->remove(id);
             cameraStateFeed->broadcastRemoved(id);
         };
 
@@ -208,7 +266,14 @@ int main(int argc, char** argv) {
         auto runtime = std::make_shared<media::CameraRuntime>(
             cameras, streams, media::makeGstSnapshotGrabber(), snapshotOptions);
 
+        media::PlaybackConfig playbackConfig;
+        playbackConfig.recordingDir = config.value().stream.recordingDir;
+        playbackConfig.motionSnapshotDir = config.value().stream.motionSnapshotDir;
+        auto playback = std::make_shared<media::PlaybackService>(
+            playbackConfig, cameras, recordingRepository, media::makeGstThumbnailExtractor());
+
         streams->start();
+        recordings->start();
 
         // Everything already in the database starts streaming without waiting
         // for someone to touch the API.
@@ -228,6 +293,9 @@ int main(int argc, char** argv) {
         auto streamController =
             api::CameraStreamController::createShared(objectMapper, runtime);
         router->addController(streamController);
+        auto playbackController =
+            api::PlaybackController::createShared(objectMapper, playback);
+        router->addController(playbackController);
 
         auto cameraStateHandler = oatpp::websocket::ConnectionHandler::createShared();
         cameraStateHandler->setSocketInstanceListener(
@@ -244,6 +312,7 @@ int main(int argc, char** argv) {
         oatpp::web::server::api::Endpoints endpoints;
         endpoints.append(cameraController->getEndpoints());
         endpoints.append(streamController->getEndpoints());
+        endpoints.append(playbackController->getEndpoints());
         // The websocket controller is deliberately absent: OpenAPI cannot
         // describe an upgrade handshake, and listing it as a GET that returns
         // 101 misleads whoever reads the docs.
@@ -282,8 +351,11 @@ int main(int argc, char** argv) {
         // Websocket connections are held by their own handler and would keep
         // the process alive after the HTTP server stopped.
         cameraStateHandler->stop();
-        // Streams first: their worker touches the camera service, which the
-        // repository outlives only until this scope ends.
+        // Recording first: it holds the shared sources and has to finalise
+        // whatever segment it is writing. Then streams, whose worker touches
+        // the camera service, which the repository outlives only until this
+        // scope ends.
+        recordings->stop();
         streams->stop();
         rtspServer->stop();
     }

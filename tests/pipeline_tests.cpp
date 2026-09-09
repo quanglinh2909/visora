@@ -21,6 +21,8 @@
 #include "media/gst/ElementAvailability.hpp"
 #include "media/pipeline/CameraPipelines.hpp"
 #include "media/stream/RetryPolicy.hpp"
+#include "media/recording/RecordingSession.hpp"
+#include "media/source/RtspEncodedSource.hpp"
 #include "media/stream/SnapshotGrabber.hpp"
 
 using namespace visora::media;
@@ -324,6 +326,53 @@ VS_TEST(the_snapshot_sink_pulls_one_frame_at_a_time) {
     // is what turns a 1080p H.265 snapshot green.
     VS_CHECK(launch.find("drop-on-latency") == std::string::npos);
     setElementProbe(nullptr);
+}
+
+// --- the shared source and the recorder --------------------------------------
+//
+// Both are strings until GStreamer accepts them. Asserting the text alone is
+// how a pipeline that merely looks right reaches a board.
+
+VS_TEST(the_shared_source_pipeline_parses_for_both_codecs) {
+    RtspSourceOptions options;
+    for (const Codec codec : {Codec::H264, Codec::H265}) {
+        const std::string launch = RtspEncodedSource::launchFor("rtsp://cam/1", codec, options);
+        VS_CHECK(!launch.empty());
+        std::string error;
+        if (!gstreamerParses(launch, &error)) {
+            ::visora::test::reportFailure(__FILE__, __LINE__, error + "  in: " + launch);
+        }
+        // config-interval=-1 repeats the parameter sets with every keyframe, so
+        // a consumer attaching mid-stream can decode from its first keyframe
+        // instead of waiting for the camera to resend them.
+        VS_CHECK(launch.find("config-interval=-1") != std::string::npos);
+        // Never drop: an access unit dropped here corrupts the stream for EVERY
+        // consumer of this camera, not just the slow one.
+        VS_CHECK(launch.find("drop=false") != std::string::npos);
+    }
+    VS_CHECK(RtspEncodedSource::launchFor("rtsp://cam/1", Codec::Unknown, options).empty());
+}
+
+VS_TEST(the_source_latency_floor_is_applied) {
+    RtspSourceOptions options;
+    options.latencyMs = 50;  // below the floor
+    const std::string launch = RtspEncodedSource::launchFor("rtsp://cam/1", Codec::H264, options);
+    // 300 ms, the same floor as the restream and the snapshot: below it a
+    // burst-delivered keyframe is truncated and every consumer sees a corrupt
+    // IDR at once.
+    VS_CHECK(launch.find("latency=300") != std::string::npos);
+}
+
+VS_TEST(the_recording_pipeline_parses) {
+    RecordingOptions options;
+    options.segmentSeconds = 10;
+    for (const Codec codec : {Codec::H264, Codec::H265}) {
+        const std::string launch = RecordingSession::launchFor("cam", codec, options);
+        std::string error;
+        if (!gstreamerParses(launch, &error)) {
+            ::visora::test::reportFailure(__FILE__, __LINE__, error + "  in: " + launch);
+        }
+    }
 }
 
 VS_MAIN()

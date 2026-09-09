@@ -83,8 +83,8 @@ RK3588 board.
 | 5a | Camera domain, repository port, service, in-memory + PostgreSQL adapters, camera REST, config, server | done |
 | 5b | RTSP restream runtime: shared server, codec probe, retry with backoff, status reported back | done |
 | 5c | Camera state websocket, stream start/stop/restart endpoints, snapshot | done |
-| 6 | Recording and playback: segments, motion triggering, HLS, range requests, playback sessions, thumbnail | next |
-| 7 | WebRTC and MoQ restream | |
+| 6 | Recording and playback: shared source, segments, HLS, range requests, retention, thumbnail | done |
+| 7 | WebRTC and MoQ restream; the RTSP mount moves onto the shared source | next |
 | 8 | Vision: model catalog, stages, transforms, AI job pipeline, ONNX Runtime backend | |
 | 9 | Cutover: run both against the same cameras and database, compare, then retire `gstreamer_c` | |
 
@@ -100,6 +100,10 @@ Runnable today, on x86_64 and on RK3588:
 - `visora` serves the camera REST API with Swagger UI, keeps every camera
   restreaming over RTSP, probes each one's codec, retries unreachable cameras
   with exponential backoff, and writes runtime state back to the row.
+- Cameras record continuously to MPEG-TS segments, indexed in PostgreSQL, and
+  play back as HLS with byte-range seeking, a scrub thumbnail and day-based
+  retention. Verified against a real PostgreSQL and decoded end to end by
+  ffmpeg.
 - Live stream status is readable (`GET /camera-streams`,
   `GET /cameras/{id}/stream`), controllable (`POST .../stream/{start,stop,restart}`),
   pushed as it changes (`GET /ws/camera-state`), and a camera can be
@@ -110,7 +114,19 @@ Runnable today, on x86_64 and on RK3588:
 - Ten test suites, all passing on both architectures.
 
 Not yet ported, and the reason to keep running `gstreamer_c` in production:
-recording, playback, WebRTC, MoQ and the entire AI pipeline.
+WebRTC, MoQ, motion detection and the entire AI pipeline.
+
+Two things from step 6 wait for a later step on purpose, because they need a
+producer that does not exist yet:
+
+- `/ws/motion-events` and the writing of `motion_events` rows. The table, the
+  repository and the read endpoints are done; motion DETECTION lives in the AI
+  pipeline (step 8), which is where the predecessor moved it after measuring
+  a decode-and-scale motion branch at 29% of a core per camera.
+- Motion-gated recording is wired end to end — `MotionGate` holds each closed
+  segment for the pre-roll window and deletes it if no event claims it — but
+  the only caller of `noteEvent` today is the API. Step 8 connects the
+  detector.
 
 ## Extension points the replacement adds
 

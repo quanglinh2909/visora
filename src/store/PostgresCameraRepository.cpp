@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include "core/Log.hpp"
+#include "store/RowReader.hpp"
 
 namespace visora::store {
 namespace {
@@ -17,8 +18,17 @@ constexpr const char* kCategory = "store";
 // Every column, in one place and in one order, so the SELECT and the row reader
 // cannot drift apart. They did in the predecessor, where each query listed its
 // own columns.
+// id is cast to text explicitly: PostgreSQL hands a UUID column back as a UUID,
+// and oatpp::Any::retrieve<String>() on one THROWS — which, on an HTTP worker
+// thread, ends the process. See store/RowReader.hpp.
+//
+// CAST(id AS TEXT), never `id::text`. oatpp's SQL template parser reads `:name`
+// as a bound parameter, and on `::` it consumes the first colon and then parses
+// the second as one — so `id::text` asks for a parameter called "text" and the
+// query dies with "Parameter not found". It skips quoted strings, so a colon
+// inside a literal is safe; a cast operator is not.
 constexpr const char* kColumns =
-    "id, name, rtsp, state, input_rtsp, output_rtsp, codec, hardware, "
+    "CAST(id AS TEXT), name, rtsp, state, input_rtsp, output_rtsp, codec, hardware, "
     "recording_enabled, recording_mode, motion_enabled, motion_sensitivity, "
     "motion_threshold, pre_motion_seconds, post_motion_seconds, segment_seconds, "
     "motion_keyframe_only, motion_grid_x, motion_grid_y, motion_cell_levels, "
@@ -28,29 +38,11 @@ constexpr const char* kColumns =
 std::string text(const oatpp::String& value) { return value ? *value : std::string(); }
 
 media::Camera readRow(const oatpp::Vector<oatpp::Any>& row) {
-    const auto str = [&row](std::size_t i) -> std::string {
-        const auto& cell = row[i];
-        if (!cell) return {};
-        return text(cell.retrieve<oatpp::String>());
-    };
-    const auto boolean = [&row](std::size_t i) -> bool {
-        const auto& cell = row[i];
-        if (!cell) return false;
-        const auto value = cell.retrieve<oatpp::Boolean>();
-        return value && *value;
-    };
-    const auto integer = [&row](std::size_t i) -> int {
-        const auto& cell = row[i];
-        if (!cell) return 0;
-        const auto value = cell.retrieve<oatpp::Int32>();
-        return value ? *value : 0;
-    };
-    const auto real = [&row](std::size_t i) -> double {
-        const auto& cell = row[i];
-        if (!cell) return 0.0;
-        const auto value = cell.retrieve<oatpp::Float64>();
-        return value ? *value : 0.0;
-    };
+    const RowReader read(row);
+    const auto str = [&read](std::size_t i) { return read.str(i); };
+    const auto boolean = [&read](std::size_t i) { return read.boolean(i); };
+    const auto integer = [&read](std::size_t i) { return read.integer(i); };
+    const auto real = [&read](std::size_t i) { return read.real(i); };
 
     media::Camera camera;
     camera.id = str(0);

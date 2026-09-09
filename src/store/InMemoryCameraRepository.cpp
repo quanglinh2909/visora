@@ -1,18 +1,14 @@
 #include "store/InMemoryCameraRepository.hpp"
 
-#include <cstdio>
+#include "store/Ids.hpp"
 
 namespace visora::store {
 namespace {
 
-// UUID-shaped so an id from this repository is interchangeable with one from
-// PostgreSQL — including in a URL, where a differently shaped id would only
-// break once someone switched backends.
+constexpr unsigned kCameraIdPrefix = 0;
+
 std::string makeId(std::uint64_t counter) {
-    char buffer[40];
-    std::snprintf(buffer, sizeof(buffer), "00000000-0000-4000-8000-%012llx",
-                  static_cast<unsigned long long>(counter));
-    return buffer;
+    return makeUuidLikeId(kCameraIdPrefix, counter);
 }
 
 }  // namespace
