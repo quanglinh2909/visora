@@ -13,8 +13,16 @@ pkg_check_modules(OPENCV REQUIRED IMPORTED_TARGET opencv4)
 # --- Rockchip: RGA 2D engine + RKNN NPU runtime -------------------------------
 find_path(VISORA_RGA_INCLUDE_DIR rga/im2d.h)
 find_library(VISORA_RGA_LIB rga)
+# rknn_api.h is NOT vendored: Rockchip ships it marked confidential, so it does
+# not belong in this repository. Obtain it from rknn-toolkit2 and either drop it
+# in third_party/rknpu2/include (git-ignored) or point VISORA_RKNN_INCLUDE_DIR
+# at wherever you keep it. See docs/rockchip-setup.md.
 find_path(VISORA_RKNN_INCLUDE_DIR rknn_api.h
-    HINTS "${CMAKE_SOURCE_DIR}/third_party/rknpu2/include")
+    HINTS
+        "$ENV{RKNN_INCLUDE_DIR}"
+        "${CMAKE_SOURCE_DIR}/third_party/rknpu2/include"
+        /usr/include/rknn
+        /usr/local/include/rknn)
 find_library(VISORA_RKNN_LIB rknnrt)
 
 if(VISORA_RGA_INCLUDE_DIR AND VISORA_RGA_LIB
@@ -66,9 +74,11 @@ else()
     else()
         visora_summary("Rockchip RGA" "NO " "librga not found")
     endif()
-    if(VISORA_RKNN_LIB)
-        visora_summary("Rockchip RKNN" "NO " "found but RGA missing")
-    else()
+    if(NOT VISORA_RKNN_LIB)
         visora_summary("Rockchip RKNN" "NO " "librknnrt not found")
+    elseif(NOT VISORA_RKNN_INCLUDE_DIR)
+        visora_summary("Rockchip RKNN" "NO " "librknnrt found, rknn_api.h missing - see docs/rockchip-setup.md")
+    else()
+        visora_summary("Rockchip RKNN" "NO " "found but RGA missing")
     endif()
 endif()

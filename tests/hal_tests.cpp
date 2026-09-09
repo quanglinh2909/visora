@@ -346,6 +346,104 @@ VS_TEST(cpu_has_no_zero_copy_import) {
     VS_CHECK(!imported.ok());
 }
 
+// --- the fallback chain -------------------------------------------------------
+//
+// No accelerator handles every case. What matters is that a refusal falls
+// through to software, while a caller mistake does not get silently retried
+// until something accepts it.
+
+namespace {
+
+bool g_pickyCalledFit = false;
+bool g_pickyCalledCrop = false;
+
+// Stands in for an accelerator with real-world limits: it declines work it
+// cannot do, and reports a caller error as a caller error.
+class PickyImageOps final : public hal::ImageOps {
+public:
+    std::string_view id() const override { return "picky"; }
+
+    core::Result<Rect> fit(const core::ImageView&, const core::MutableImageView&,
+                           core::FitMode, std::uint8_t) override {
+        g_pickyCalledFit = true;
+        return core::unsupported("scale ratio outside hardware limits");
+    }
+
+    core::Status crop(const core::ImageView&, Rect,
+                      const core::MutableImageView&) override {
+        g_pickyCalledCrop = true;
+        return core::invalidArgument("caller passed a degenerate rectangle");
+    }
+};
+
+const hal::Register<hal::ImageOps> registerPicky{{
+    "picky", 200,
+    [] { return hal::Probe::yes("simulated accelerator with limits"); },
+    [] { return std::unique_ptr<hal::ImageOps>(new PickyImageOps()); },
+}};
+
+}  // namespace
+
+VS_TEST(chain_puts_the_highest_priority_backend_in_front) {
+    auto ops = hal::imageOps();
+    VS_CHECK(ops.ok());
+    if (!ops.ok()) return;
+
+    const std::string id(ops.value()->id());
+    VS_CHECK(id.find("picky") != std::string::npos);
+    VS_CHECK(id.find("cpu") != std::string::npos);
+    VS_CHECK(id.find("picky") < id.find("cpu"));
+}
+
+VS_TEST(chain_falls_through_when_hardware_declines) {
+    auto ops = hal::imageOps();
+    VS_CHECK(ops.ok());
+    if (!ops.ok()) return;
+
+    g_pickyCalledFit = false;
+    const core::OwnedImage src = solidRgb({320, 240}, 60, 120, 180);
+    core::OwnedImage dst(PixelFormat::RGB888, {128, 128});
+
+    auto content = ops.value()->fit(src.view(), dst.view(), core::FitMode::Letterbox, 0);
+    VS_CHECK(g_pickyCalledFit);   // the accelerator was asked first
+    VS_CHECK(content.ok());       // and software finished the job
+
+    const std::uint8_t* centre = pixelAt(dst, 64, 64);
+    VS_CHECK(near(centre[0], 60, 3));
+    VS_CHECK(near(centre[2], 180, 3));
+}
+
+VS_TEST(chain_does_not_retry_a_caller_error) {
+    auto ops = hal::imageOps();
+    VS_CHECK(ops.ok());
+    if (!ops.ok()) return;
+
+    g_pickyCalledCrop = false;
+    const core::OwnedImage src = solidRgb({320, 240}, 10, 20, 30);
+    core::OwnedImage dst(PixelFormat::RGB888, {32, 32});
+
+    const core::Status result = ops.value()->crop(src.view(), Rect{0, 0, 64, 64}, dst.view());
+    VS_CHECK(g_pickyCalledCrop);
+    // InvalidArgument means the caller is wrong; trying every backend in turn
+    // would just hide the bug behind whichever one is most permissive.
+    VS_CHECK(!result.ok());
+    VS_CHECK(result.error().code == core::ErrorCode::InvalidArgument);
+}
+
+VS_TEST(forcing_a_backend_disables_the_chain) {
+    // Same process, forced selection: this is how you measure the accelerator
+    // rather than the software path wearing its name.
+    auto forced = hal::imageOpsRegistry().select("image-ops", "picky");
+    VS_CHECK(forced.ok());
+    if (!forced.ok()) return;
+    VS_CHECK(forced.value()->id() == "picky");
+
+    const core::OwnedImage src = solidRgb({320, 240}, 1, 2, 3);
+    core::OwnedImage dst(PixelFormat::RGB888, {128, 128});
+    auto content = forced.value()->fit(src.view(), dst.view(), core::FitMode::Letterbox, 0);
+    VS_CHECK(!content.ok());  // no software underneath it
+}
+
 // --- the capability report ---------------------------------------------------
 
 VS_TEST(capability_report_names_the_platform_and_the_backends) {

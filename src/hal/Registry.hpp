@@ -133,6 +133,30 @@ public:
                               rejected + ")");
     }
 
+    // Every available backend, best first. This is what builds a fallback
+    // chain: no accelerator handles every case (scale-ratio limits, stride
+    // alignment, formats it was never designed for), so the software path has
+    // to stay reachable underneath rather than being an either/or choice.
+    std::vector<std::unique_ptr<Interface>> selectAll(std::string_view kind) {
+        std::vector<Entry> ordered;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            ordered = m_entries;
+        }
+        std::stable_sort(ordered.begin(), ordered.end(),
+                         [](const Entry& a, const Entry& b) { return a.priority > b.priority; });
+
+        std::vector<std::unique_ptr<Interface>> built;
+        for (const Entry& entry : ordered) {
+            const Probe probe = entry.probe ? entry.probe() : Probe::no("no probe");
+            if (!probe.available) continue;
+            VS_INFO("hal") << kind << ": available backend '" << entry.id << "' ("
+                           << probe.detail << ")";
+            built.push_back(entry.make());
+        }
+        return built;
+    }
+
     std::size_t size() const {
         std::lock_guard<std::mutex> lock(m_mutex);
         return m_entries.size();

@@ -69,8 +69,14 @@ struct ImageView {
     const std::uint8_t* data = nullptr;
     int dmaFd = -1;
 
+    // Set by ImageOps::import() when a backend has taken a zero-copy reference
+    // to this buffer. Opaque: only the backend that produced it knows what the
+    // number means, which is what keeps vendor types out of this header.
+    std::uint64_t nativeHandle = 0;
+
     bool hasCpu() const { return data != nullptr; }
     bool hasDmaBuf() const { return dmaFd >= 0; }
+    bool hasNativeHandle() const { return nativeHandle != 0; }
     bool valid() const { return format != PixelFormat::Unknown && size.valid(); }
 
     static ImageView packed(PixelFormat format, Size size, const std::uint8_t* data);
@@ -82,9 +88,11 @@ struct MutableImageView {
     Planes planes;
     std::uint8_t* data = nullptr;
     int dmaFd = -1;
+    std::uint64_t nativeHandle = 0;
 
     bool hasCpu() const { return data != nullptr; }
     bool hasDmaBuf() const { return dmaFd >= 0; }
+    bool hasNativeHandle() const { return nativeHandle != 0; }
     bool valid() const { return format != PixelFormat::Unknown && size.valid(); }
 
     ImageView readable() const;

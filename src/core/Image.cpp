@@ -91,6 +91,7 @@ ImageView MutableImageView::readable() const {
     v.planes = planes;
     v.data = data;
     v.dmaFd = dmaFd;
+    v.nativeHandle = nativeHandle;
     return v;
 }
 

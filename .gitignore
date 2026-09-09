@@ -11,3 +11,6 @@ weights/
 recordings/
 events/
 config/local.json
+
+# Vendor SDK headers, fetched per machine (see docs/rockchip-setup.md)
+third_party/
