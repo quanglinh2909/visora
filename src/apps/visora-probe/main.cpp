@@ -12,6 +12,7 @@
 #include <string>
 
 #include "hal/Capabilities.hpp"
+#include "media/gst/CodecProvider.hpp"
 
 int main(int argc, char** argv) {
     bool json = false;
@@ -31,7 +32,13 @@ int main(int argc, char** argv) {
         }
     }
 
-    const visora::hal::Capabilities caps = visora::hal::detectCapabilities();
+    visora::hal::Capabilities caps = visora::hal::detectCapabilities();
+
+    // The application joins the layers. hal cannot ask media what it found —
+    // that would invert the dependency order the whole build enforces.
+    for (auto& row : visora::media::codecBackendStatus()) {
+        caps.backends.push_back(std::move(row));
+    }
     const std::string out = json ? visora::hal::toJson(caps) : visora::hal::toText(caps);
     std::fwrite(out.data(), 1, out.size(), stdout);
     if (json) std::fputc('\n', stdout);

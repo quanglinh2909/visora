@@ -34,3 +34,10 @@ add_executable(result_sink_tests result_sink_tests.cpp)
 target_link_libraries(result_sink_tests PRIVATE visora::vision visora::backends)
 target_include_directories(result_sink_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME result_sink_tests COMMAND result_sink_tests)
+
+# Pipeline construction and codec-provider selection. The element probe is a
+# seam, so preference for hardware this machine lacks is exercised too.
+add_executable(codec_tests codec_tests.cpp)
+target_link_libraries(codec_tests PRIVATE visora::media visora::backends)
+target_include_directories(codec_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME codec_tests COMMAND codec_tests)
