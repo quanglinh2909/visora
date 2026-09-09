@@ -245,6 +245,14 @@ The lesson generalises to any accelerator backend:
   to handle. A software fallback is a cheap price; a wedged board is not.
 - **Assume hardware tests can take the machine down.** Do not run a first
   hardware bring-up on something you cannot power-cycle.
+- **Run driver-facing tests one process per case, with a timeout.** A suite that
+  dies at the first hang tells you almost nothing. `tests/IsolatedRunner.hpp`
+  reports the hang by name and carries on; `runner_selftest` proves it works,
+  because an unexercised safety net is the one that fails.
+- **Prefer declining to being clever.** A backend that says "I cannot do this"
+  and lets the software path finish is worth more than one that stretches to
+  cover every case on the code path where mistakes hang the machine. Multi-pass
+  RGA scaling was written here, then removed for exactly this reason.
 
 ## Known invariants worth not breaking
 

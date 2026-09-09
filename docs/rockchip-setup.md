@@ -107,6 +107,26 @@ on the CPU.
 - **CPU-read destinations in handle mode must be dma-heap memory** and need
   `DMA_BUF_IOCTL_SYNC` after the blit. Imported malloc memory gets no per-job
   cache maintenance and the CPU reads stale lines — visible as posterised images.
-- **RGB destinations need a 16-aligned pixel stride.** Handled internally.
-- **One pass scales by at most ~16x.** Handled internally by splitting into
-  several passes, so a tight crop stays tight rather than being grown to fit.
+- **RGB destinations need a 16-aligned pixel stride.** Handled internally with a
+  stride-aligned scratch, skipped when the destination width is already a
+  multiple of 16 — which most model inputs are.
+- **There is a minimum source rectangle, around 128 px.** Below it the driver
+  does not refuse the job, it stops responding. A 30x30 crop hung it here.
+  `RgaImageOps` declines anything smaller.
+- **A blit scales by at most ~16x in either direction.** Larger ratios are
+  declined.
+
+The last two are why the software backend is not a fallback in name only. On
+this board RGA takes the work that matters and declines the rest:
+
+| Operation | Outcome |
+|---|---|
+| Letterbox NV12 1920x1080 -> RGB888 640x640 (every camera frame) | RGA |
+| Crop 128x128 -> 512x512 | RGA |
+| RGB888 256x256 -> NV12 | RGA |
+| Crop 30x30 -> 512x512 (tight plate crop) | declined, software |
+| Stretch 1920x1080 -> 100x100 (19x down) | declined, software |
+| RGB888 64x64 -> NV12 (small source) | declined, software |
+
+That is the same division of labour the predecessor system arrived at, reached
+automatically rather than as a hand-written special case.
