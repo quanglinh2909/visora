@@ -21,6 +21,7 @@ enable_testing()
 
 add_subdirectory(src/core)
 add_subdirectory(src/hal)
+add_subdirectory(src/vision)
 add_subdirectory(src/apps/visora-probe)
 add_subdirectory(tests)
 

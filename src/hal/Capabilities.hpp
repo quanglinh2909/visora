@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-#include "hal/Probe.hpp"
+#include "hal/Registry.hpp"
 
 namespace visora::hal {
 

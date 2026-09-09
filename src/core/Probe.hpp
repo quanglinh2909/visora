@@ -2,7 +2,7 @@
 
 #include <string>
 
-namespace visora::hal {
+namespace visora::core {
 
 // What a backend answers when asked "can you run on this machine?".
 //
@@ -27,4 +27,4 @@ struct BackendStatus {
     std::string detail;
 };
 
-}  // namespace visora::hal
+}  // namespace visora::core
