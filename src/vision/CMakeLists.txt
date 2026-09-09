@@ -4,6 +4,7 @@
 # tests run on a machine with no accelerator.
 add_library(visora_vision STATIC
     AiJob.cpp
+    AiJobService.cpp
     ModelType.cpp
     StageRunner.cpp
     ResultSink.cpp

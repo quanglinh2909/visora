@@ -19,6 +19,7 @@
 #include "api/controllers/CameraController.hpp"
 #include "api/controllers/CameraStreamController.hpp"
 #include "api/controllers/PlaybackController.hpp"
+#include "api/controllers/AiController.hpp"
 #include "api/controllers/MoqController.hpp"
 #include "api/controllers/WebRtcController.hpp"
 #include "api/controllers/WebSocketController.hpp"
@@ -33,15 +34,19 @@
 #include "media/recording/RecordingManager.hpp"
 #include "media/recording/ThumbnailExtractor.hpp"
 #include "media/source/CameraSourceRegistry.hpp"
+#include "media/ai/AiRuntime.hpp"
 #include "media/moq/MoqService.hpp"
 #include "media/webrtc/WebRtcService.hpp"
 #include "media/stream/RtspServer.hpp"
 #include "media/stream/SnapshotGrabber.hpp"
 #include "media/stream/StreamManager.hpp"
 #include "store/InMemoryCameraRepository.hpp"
+#include "store/InMemoryAiJobRepository.hpp"
 #include "store/InMemoryRecordingRepository.hpp"
 #include "store/PostgresCameraRepository.hpp"
 #include "store/PostgresRecordingRepository.hpp"
+#include "vision/AiJobService.hpp"
+#include "vision/ResultSink.hpp"
 
 #include "oatpp-swagger/Controller.hpp"
 #include "oatpp-websocket/ConnectionHandler.hpp"
@@ -79,7 +84,10 @@ void onSignal(int) {
 struct Repositories {
     std::shared_ptr<visora::media::CameraRepository> cameras;
     std::shared_ptr<visora::media::RecordingRepository> recordings;
-    bool ok() const { return cameras != nullptr && recordings != nullptr; }
+    std::shared_ptr<visora::vision::AiJobRepository> aiJobs;
+    bool ok() const {
+        return cameras != nullptr && recordings != nullptr && aiJobs != nullptr;
+    }
 };
 
 Repositories makeRepositories(const visora::api::DatabaseConfig& config) {
@@ -90,7 +98,8 @@ Repositories makeRepositories(const visora::api::DatabaseConfig& config) {
                               "are kept in memory and will not survive a restart "
                               "(recorded FILES do survive, but nothing will index them)";
         return {std::make_shared<store::InMemoryCameraRepository>(),
-                std::make_shared<store::InMemoryRecordingRepository>()};
+                std::make_shared<store::InMemoryRecordingRepository>(),
+                std::make_shared<store::InMemoryAiJobRepository>()};
     }
 
     auto executor = store::makePostgresExecutor(config.url, config.poolMaxConnections,
@@ -102,7 +111,11 @@ Repositories makeRepositories(const visora::api::DatabaseConfig& config) {
         return {};
     }
     return {std::make_shared<store::PostgresCameraRepository>(executor.value()),
-            std::make_shared<store::PostgresRecordingRepository>(executor.value())};
+            std::make_shared<store::PostgresRecordingRepository>(executor.value()),
+            // AI jobs stay in memory until the PostgreSQL adapter for them
+            // exists; they are re-created from the API rather than lost
+            // silently, and the warning below says so.
+            std::make_shared<store::InMemoryAiJobRepository>()};
 }
 
 }  // namespace
@@ -184,13 +197,27 @@ int main(int argc, char** argv) {
         auto recordings = std::make_shared<media::RecordingManager>(
             recordingConfig, recordingRepository, sources);
 
+        // Where results go. Registered plug-ins, several at once — the Unix
+        // socket the Python consumer reads is simply the first one.
+        auto resultSinks = std::make_shared<vision::ResultSinkSet>();
+        resultSinks->startAll();
+
+        media::AiRuntimeConfig aiConfig;
+        aiConfig.analyseFps = config.value().ai.analyseFps;
+        auto aiRuntime = std::make_shared<media::AiRuntime>(aiConfig, sources, resultSinks);
+        // A detection is worth keeping footage of, in a camera set to record
+        // only around events. Recording decides what to do with it.
+        aiRuntime->setEventSink(
+            [recordings](const std::string& cameraId) { recordings->noteEvent(cameraId); });
+
+
         // The service is captured weakly on purpose: the manager's worker
         // thread outlives nothing here, but a strong reference would make the
         // two own each other and neither would ever be destroyed.
         std::weak_ptr<media::CameraService> cameraServiceWeak;
         auto streams = std::make_shared<media::StreamManager>(
             streamConfig, rtspServer,
-            [&cameraServiceWeak, cameraStateFeed, recordings](
+            [&cameraServiceWeak, cameraStateFeed, recordings, aiRuntime](
                 const std::string& cameraId, const media::StreamStatus& status) {
                 media::CameraRuntimeFields fields;
                 fields.state = status.state;
@@ -231,10 +258,11 @@ int main(int argc, char** argv) {
                 // that looks like a broken camera.
                 if (auto service = cameraServiceWeak.lock()) {
                     if (auto camera = service->get(cameraId)) {
-                        recordings->apply(camera.value(),
-                                          status.state == media::CameraState::Online
-                                              ? status.codec
-                                              : media::Codec::Unknown);
+                        const media::Codec live = status.state == media::CameraState::Online
+                                                      ? status.codec
+                                                      : media::Codec::Unknown;
+                        recordings->apply(camera.value(), live);
+                        aiRuntime->applyCamera(camera.value(), live);
                     }
                 }
             });
@@ -287,10 +315,26 @@ int main(int argc, char** argv) {
         auto moq = std::make_shared<media::MoqService>(moqConfig, cameras, sources,
                                                        recordingRepository);
 
+        vision::AiJobEvents aiEvents;
+        aiEvents.added = [aiRuntime](const vision::AiJob& job) { aiRuntime->applyJob(job); };
+        aiEvents.changed = [aiRuntime](const vision::AiJob& job, const vision::AiJobDiff&) {
+            aiRuntime->applyJob(job);
+        };
+        aiEvents.removed = [aiRuntime](const std::string& id) { aiRuntime->removeJob(id); };
+        auto aiJobs = std::make_shared<vision::AiJobService>(repositories.aiJobs,
+                                                             std::move(aiEvents));
+
         streams->start();
         recordings->start();
         webrtc->start();
         moq->start();
+        aiRuntime->start();
+
+        // Jobs already stored start with the service, the same way cameras do.
+        if (auto existing = aiJobs->list()) {
+            for (const vision::AiJob& job : existing.value()) aiRuntime->applyJob(job);
+            VS_INFO(kCategory) << "restored " << existing.value().size() << " AI job(s)";
+        }
 
         // Everything already in the database starts streaming without waiting
         // for someone to touch the API.
@@ -317,6 +361,9 @@ int main(int argc, char** argv) {
         router->addController(webrtcController);
         auto moqController = api::MoqController::createShared(objectMapper, moq);
         router->addController(moqController);
+        auto aiController = api::AiController::createShared(objectMapper, aiJobs, aiRuntime,
+                                                            config.value().ai.modelDir);
+        router->addController(aiController);
 
         auto cameraStateHandler = oatpp::websocket::ConnectionHandler::createShared();
         cameraStateHandler->setSocketInstanceListener(
@@ -336,6 +383,7 @@ int main(int argc, char** argv) {
         endpoints.append(playbackController->getEndpoints());
         endpoints.append(webrtcController->getEndpoints());
         endpoints.append(moqController->getEndpoints());
+        endpoints.append(aiController->getEndpoints());
         // The websocket controller is deliberately absent: OpenAPI cannot
         // describe an upgrade handshake, and listing it as a GET that returns
         // 101 misleads whoever reads the docs.
@@ -380,6 +428,9 @@ int main(int argc, char** argv) {
         // scope ends.
         // Viewers first: each holds a shared source, and a source that is still
         // referenced cannot be closed.
+        // AI first: its workers hold frame taps, which hold shared sources.
+        aiRuntime->stop();
+        resultSinks->stopAll();
         moq->stop();
         webrtc->stop();
         recordings->stop();

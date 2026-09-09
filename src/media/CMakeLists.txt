@@ -11,6 +11,7 @@ pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET
     gstreamer-sdp-1.0
     gstreamer-rtp-1.0
     gstreamer-webrtc-1.0
+    gstreamer-video-1.0
 )
 
 add_library(visora_media STATIC
@@ -29,6 +30,9 @@ add_library(visora_media STATIC
     recording/RecordingManager.cpp
     recording/RecordingSession.cpp
     recording/ThumbnailExtractor.cpp
+    ai/AiRuntime.cpp
+    ai/FrameTap.cpp
+    ai/JpegEncoder.cpp
     moq/MoqFeed.cpp
     moq/MoqService.cpp
     webrtc/Sdp.cpp
@@ -48,7 +52,7 @@ add_library(visora_media STATIC
 )
 add_library(visora::media ALIAS visora_media)
 
-target_link_libraries(visora_media PUBLIC visora::core PkgConfig::GSTREAMER)
+target_link_libraries(visora_media PUBLIC visora::core visora::vision PkgConfig::GSTREAMER)
 
 # Codec providers are plug-ins, collected like every other backend: an OBJECT
 # library reaching consumers through target_sources. See docs/ARCHITECTURE.md.

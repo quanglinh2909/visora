@@ -4,11 +4,12 @@
 # the service tests run against, and a usable single-node mode on a board with
 # no PostgreSQL.
 add_library(visora_store STATIC
+    InMemoryAiJobRepository.cpp
     InMemoryCameraRepository.cpp
     InMemoryRecordingRepository.cpp
 )
 add_library(visora::store ALIAS visora_store)
-target_link_libraries(visora_store PUBLIC visora::media)
+target_link_libraries(visora_store PUBLIC visora::media visora::vision)
 
 if(VISORA_WITH_API)
     target_sources(visora_store PRIVATE

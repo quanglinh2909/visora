@@ -140,6 +140,12 @@ core::Result<Config> loadConfig(const std::string& path) {
         readInt(*database, "poolMaxConnections", config.database.poolMaxConnections);
         readInt(*database, "poolIdleSeconds", config.database.poolIdleSeconds);
     }
+    oatpp::Fields<oatpp::Any> aiStorage;
+    if (const auto* ai = section(root, "ai", aiStorage)) {
+        readString(*ai, "modelDir", config.ai.modelDir);
+        readInt(*ai, "analyseFps", config.ai.analyseFps);
+    }
+
     if (const auto* stream = section(root, "gstreamer", storage)) {
         readString(*stream, "rtspHost", config.stream.rtspHost);
         readString(*stream, "publicRtspHost", config.stream.publicRtspHost);

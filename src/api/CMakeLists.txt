@@ -7,6 +7,7 @@ add_library(visora_api STATIC
     ByteRange.cpp
     Config.cpp
     HttpError.cpp
+    mappers/AiMapper.cpp
     mappers/CameraMapper.cpp
     mappers/RecordingMapper.cpp
     mappers/StreamStatusMapper.cpp

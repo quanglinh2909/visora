@@ -50,10 +50,22 @@ struct StreamConfig {
     std::string moqSocketPath;
 };
 
+struct AiConfig {
+    // Where model files live, for GET /ai-models. Jobs may still name a path
+    // anywhere; this is only what the catalogue lists.
+    std::string modelDir = "models";
+
+    // How often a camera is decoded for analysis. Not every frame: a detector
+    // at 5 fps sees everything that matters and leaves the accelerator for the
+    // other cameras.
+    int analyseFps = 5;
+};
+
 struct Config {
     ServerConfig server;
     DatabaseConfig database;
     StreamConfig stream;
+    AiConfig ai;
     std::string swaggerTitle = "Visora API";
     std::string swaggerVersion = "1.0";
 };
