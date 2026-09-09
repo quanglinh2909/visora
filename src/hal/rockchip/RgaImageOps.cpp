@@ -67,6 +67,24 @@ constexpr double kMaxScalePerPass = 15.5;
 // RGB destinations need their pixel stride 16-aligned.
 constexpr int kRgbStrideAlign = 16;
 
+// Smallest source rectangle handed to RGA.
+//
+// Below this the RGA3 core on RK3588 does not merely refuse the job — it can
+// stop responding, and a wedged RGA is not a recoverable error. A 30x30 crop
+// hung the driver here on 2026-09-09.
+//
+// 128 is not a guess: the predecessor system arrived at exactly this threshold
+// after running on this hardware in production, and worked around it with a
+// dedicated software crop path. Here the chain does that automatically — RGA
+// declines, the software backend finishes the job.
+//
+// A caller that can afford surrounding context has the other option:
+// core::expandToMin() grows the crop to this size and keeps it on hardware.
+// A tight-crop model cannot, because the extra context is what costs it
+// accuracy, so for those the software path is the right answer rather than a
+// consolation.
+constexpr int kMinSourceExtent = 128;
+
 int alignUp(int value, int to) { return (value + to - 1) / to * to; }
 
 // --- format mapping ----------------------------------------------------------
@@ -323,6 +341,14 @@ private:
         }
         if (!src.hasNativeHandle() && !src.hasCpu()) {
             return core::unsupported("rga source needs a handle or a mapped pointer");
+        }
+        if (srcRect.width < kMinSourceExtent || srcRect.height < kMinSourceExtent) {
+            // Declining, not attempting. See kMinSourceExtent: getting this
+            // wrong hangs the driver rather than returning an error.
+            return core::unsupported(
+                "source rect " + std::to_string(srcRect.width) + "x" +
+                std::to_string(srcRect.height) + " is below the " +
+                std::to_string(kMinSourceExtent) + " px minimum RGA handles reliably");
         }
 
         const int passes = passesNeeded(srcRect.size(), dstRect.size());

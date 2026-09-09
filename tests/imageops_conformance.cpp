@@ -218,12 +218,42 @@ VS_TEST(nv12_with_a_padded_row_stride) {
     }
 }
 
-VS_TEST(tight_crop_upscaled_past_the_single_pass_scale_limit) {
-    // The case that shaped the design: a licence plate about 30 px wide going
-    // into a 512 px model input is a 17x upscale, past what one RGA pass does.
-    // Growing the crop would change what a tight-crop model sees, so the blit is
-    // split into several passes instead. The crop must stay tight and the colour
-    // must survive.
+VS_TEST(large_crop_upscaled_past_the_single_pass_scale_limit) {
+    // 128x128 (the smallest RGA takes) into 512x512 is only 4x, so this is the
+    // multi-pass path's sibling: big enough for hardware, and a check that a
+    // large upscale is correct on whichever backend runs it.
+    core::OwnedImage src(PixelFormat::RGB888, {1920, 1080});
+    std::memset(src.data(), 0, src.byteCount());
+    for (int y = 500; y < 628; ++y) {
+        for (int x = 900; x < 1028; ++x) {
+            std::uint8_t* p = src.data() + (static_cast<std::size_t>(y) * 1920 + x) * 3;
+            p[0] = 20;
+            p[1] = 200;
+            p[2] = 90;
+        }
+    }
+    for (const Backend& backend : backends()) {
+        core::OwnedImage dst(PixelFormat::RGB888, {512, 512});
+        const core::Status ok =
+            backend.ops->crop(src.view(), Rect{900, 500, 128, 128}, dst.view());
+        if (!ok.ok()) {
+            CONFORM_CHECK(backend.id, declined(ok.error()));
+            continue;
+        }
+        const std::uint8_t* centre = rgbPixel(dst, 256, 256);
+        CONFORM_NEAR(backend.id, centre[0], 20, 10);
+        CONFORM_NEAR(backend.id, centre[1], 200, 10);
+        CONFORM_NEAR(backend.id, centre[2], 90, 10);
+    }
+}
+
+VS_TEST(tight_crop_below_what_the_accelerator_handles) {
+    // A licence plate about 30 px wide going into a 512 px model input: a 17x
+    // upscale, past what one RGA pass does, and below the source size RGA
+    // handles at all. Whichever backend takes it, the crop must stay tight —
+    // growing it changes what a tight-crop model sees — and the colour must
+    // survive. RGA declines this one and the software path finishes it, which
+    // is a correct outcome, not a failure.
     core::OwnedImage src(PixelFormat::RGB888, {1920, 1080});
     std::memset(src.data(), 0, src.byteCount());
     for (int y = 500; y < 530; ++y) {
