@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <functional>
 #include <mutex>
+#include <vector>
 #include <numeric>
 
 namespace visora::hal {
@@ -53,6 +54,53 @@ core::Result<InferenceBackend*> inference() {
     }
     cached = std::move(selected.value());
     return cached.get();
+}
+
+std::vector<InferenceBackend*> availableInferenceBackends() {
+    // Built once and kept. A backend holds a runtime handle — an NPU context,
+    // an ONNX Runtime environment — that is expensive to create and meant to be
+    // shared by every model loaded on it.
+    static std::mutex mutex;
+    static std::vector<std::unique_ptr<InferenceBackend>> cached;
+    static bool built = false;
+
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!built) {
+        cached = inferenceRegistry().selectAll("inference");
+        built = true;
+    }
+
+    std::vector<InferenceBackend*> out;
+    out.reserve(cached.size());
+    for (const auto& backend : cached) out.push_back(backend.get());
+    return out;
+}
+
+core::Result<std::unique_ptr<Model>> loadModel(const ModelRef& model) {
+    const auto backends = availableInferenceBackends();
+    if (backends.empty()) {
+        return core::notFound("no inference backend is available on this machine");
+    }
+
+    std::string tried;
+    for (InferenceBackend* backend : backends) {
+        if (!backend->handles(model)) {
+            if (!tried.empty()) tried += ", ";
+            tried += backend->id();
+            continue;
+        }
+        auto loaded = backend->load(model);
+        if (loaded) {
+            VS_INFO("hal") << "model " << model.path << " loaded on '" << backend->id() << '\'';
+            return loaded;
+        }
+        // A backend that CLAIMED the artefact and then failed is reported as
+        // it is: falling through to one that does not understand the format
+        // would replace a real error with a confusing one.
+        return loaded.error();
+    }
+    return core::unsupported("no backend handles " + model.path +
+                             (tried.empty() ? "" : " (tried " + tried + ')'));
 }
 
 }  // namespace visora::hal

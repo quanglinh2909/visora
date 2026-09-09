@@ -62,6 +62,14 @@ target_link_libraries(runtime_tests PRIVATE visora::store visora::backends)
 target_include_directories(runtime_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME runtime_tests COMMAND runtime_tests)
 
+# The vision layer: registries, stage-tree validation and the YOLOv8 decode.
+# The decode runs against tensors built in the test, so it needs no NPU, no ONNX
+# Runtime and no weights — which is what the tensor-level abstraction buys.
+add_executable(vision_tests vision_tests.cpp)
+target_link_libraries(vision_tests PRIVATE visora::vision visora::backends)
+target_include_directories(vision_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME vision_tests COMMAND vision_tests)
+
 # The MoQ wire format, pinned byte by byte: a separately deployed QUIC server
 # reads it, so it cannot change without coordinating a deployment.
 add_executable(moq_tests moq_tests.cpp)

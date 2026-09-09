@@ -100,4 +100,16 @@ Registry<InferenceBackend>& inferenceRegistry();
 // disabled with that reason rather than crashing.
 core::Result<InferenceBackend*> inference();
 
+// Loads a model on whichever available backend can handle that artefact.
+//
+// Prefer this to inference(): the selected backend is not necessarily the one
+// that understands a given file. A board with an NPU still needs ONNX Runtime
+// for a .onnx, and a machine with both should use each for what it is for. Same
+// reasoning as resolveDecoder in the codec layer — asking only the best backend
+// fails on a machine that can do the work perfectly well with the next one.
+core::Result<std::unique_ptr<Model>> loadModel(const ModelRef& model);
+
+// Every available backend, best first. Exposed for the capability report.
+std::vector<InferenceBackend*> availableInferenceBackends();
+
 }  // namespace visora::hal
