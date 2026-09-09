@@ -60,8 +60,10 @@ using core::Size;
 
 constexpr const char* kCategory = "rga";
 
-// A single RGA pass scales by at most this much in either direction. Kept a
-// little under the documented 16 so a rounding error cannot land on the edge.
+// RGA scales by at most this much in either direction, in one pass — which is
+// the only kind of pass there is here. Kept a little under the documented 16 so
+// a rounding error cannot land on the edge. Beyond it the job is declined and
+// the software backend takes over.
 constexpr double kMaxScalePerPass = 15.5;
 
 // RGB destinations need their pixel stride 16-aligned.
@@ -204,32 +206,6 @@ bool describeSource(const ImageView& image, int rgaFormat, rga_buffer_t* out,
     return false;
 }
 
-// How many passes it takes to get from `from` to `to` without exceeding the
-// per-pass scale limit in either direction.
-int passesNeeded(Size from, Size to) {
-    const double ratioX = std::max(static_cast<double>(to.width) / from.width,
-                                   static_cast<double>(from.width) / to.width);
-    const double ratioY = std::max(static_cast<double>(to.height) / from.height,
-                                   static_cast<double>(from.height) / to.height);
-    const double worst = std::max(ratioX, ratioY);
-    if (worst <= kMaxScalePerPass) return 1;
-    // Three passes cover 3700x, far beyond anything a camera pipeline asks for.
-    const int needed = static_cast<int>(std::ceil(std::log(worst) / std::log(kMaxScalePerPass)));
-    return std::min(needed, 3);
-}
-
-// The size to aim for on pass `index` of `total`, geometrically interpolated so
-// no single pass exceeds the limit.
-Size intermediateSize(Size from, Size to, int index, int total) {
-    if (index >= total - 1) return to;
-    const double t = static_cast<double>(index + 1) / total;
-    const auto scale = [t](int a, int b) {
-        const double value = std::pow(static_cast<double>(b) / a, t) * a;
-        return std::max(2, core::alignDown2(static_cast<int>(std::lround(value))));
-    };
-    return {scale(from.width, to.width), scale(from.height, to.height)};
-}
-
 // --- the backend -------------------------------------------------------------
 
 class RgaImageOps final : public ImageOps {
@@ -351,51 +327,28 @@ private:
                 std::to_string(kMinSourceExtent) + " px minimum RGA handles reliably");
         }
 
-        const int passes = passesNeeded(srcRect.size(), dstRect.size());
-        if (passes == 1) {
-            return blitOnce(src, srcFormat, srcRect, dst, dstFormat, dstRect);
-        }
-
-        VS_DEBUG(kCategory) << "scaling " << srcRect.width << 'x' << srcRect.height << " -> "
-                            << dstRect.width << 'x' << dstRect.height << " in " << passes
-                            << " passes (per-pass limit " << kMaxScalePerPass << "x)";
-
-        // Intermediates carry the destination format, so the colour conversion
-        // happens once, on the first pass.
+        // Scale ratio. RGA does roughly 1/16x to 16x in one pass, and it does
+        // not fail gracefully outside that.
         //
-        // They also stay in the source's buffer mode the whole way down. A
-        // handle-mode source blits into dma-heap scratches, which are then
-        // described BY HANDLE for the next pass; a virtual-address source blits
-        // into ordinary heap scratches. Switching modes part-way is what wedges
-        // the driver.
-        const bool handleMode = src.hasNativeHandle();
-        ImageView current = src;
-        Rect currentRect = srcRect;
-        int currentFormat = srcFormat;
-
-        for (int pass = 0; pass < passes - 1; ++pass) {
-            const Size target = intermediateSize(srcRect.size(), dstRect.size(), pass, passes);
-
-            if (handleMode) {
-                DmaHeapBuffer& scratch = passScratch(pass);
-                const core::Status step = blitToDmaScratch(current, currentFormat, currentRect,
-                                                           dstFormat, target, scratch);
-                if (!step.ok()) return step;
-                current = dmaScratchView(scratch, dst.format, target);
-            } else {
-                std::vector<std::uint8_t>& scratch = passHeapScratch(pass);
-                int stride = 0;
-                const core::Status step = blitToHeapScratch(current, currentFormat, currentRect,
-                                                            dstFormat, target, scratch, &stride);
-                if (!step.ok()) return step;
-                current = heapScratchView(scratch.data(), stride, dst.format, target);
-            }
-
-            currentRect = Rect{0, 0, target.width, target.height};
-            currentFormat = dstFormat;
+        // An earlier version split the blit into several passes to stay inside
+        // the limit. That has been removed: with kMinSourceExtent in place the
+        // case it existed for (a tiny crop upscaled enormously) never reaches
+        // hardware anyway, so it was untested complexity on the one code path
+        // where a mistake hangs the machine. Declining and letting the software
+        // backend finish is both simpler and what the predecessor system did.
+        const double ratioX = std::max(
+            static_cast<double>(dstRect.width) / srcRect.width,
+            static_cast<double>(srcRect.width) / dstRect.width);
+        const double ratioY = std::max(
+            static_cast<double>(dstRect.height) / srcRect.height,
+            static_cast<double>(srcRect.height) / dstRect.height);
+        const double worst = std::max(ratioX, ratioY);
+        if (worst > kMaxScalePerPass) {
+            return core::unsupported("scale ratio " + std::to_string(worst) +
+                                     "x exceeds what RGA does in one pass");
         }
 
-        return blitOnce(current, currentFormat, currentRect, dst, dstFormat, dstRect);
+        return blitOnce(src, srcFormat, srcRect, dst, dstFormat, dstRect);
     }
 
     // A blit whose destination is the caller's buffer.
@@ -528,38 +481,6 @@ private:
         return {};
     }
 
-    static ImageView scratchViewCommon(const std::uint8_t* data, int pixelStrideValue,
-                                       PixelFormat format, Size size) {
-        ImageView view;
-        view.format = format;
-        view.size = size;
-        view.data = data;
-        // planes[] strides are in BYTES; RGA's are in pixels. pixelStride()
-        // converts back at the boundary.
-        if (format == PixelFormat::NV12) {
-            view.planes[0] = {pixelStrideValue, 0};
-            view.planes[1] = {pixelStrideValue, static_cast<std::size_t>(pixelStrideValue) *
-                                                    static_cast<std::size_t>(size.height)};
-        } else {
-            view.planes[0] = {pixelStrideValue * 3, 0};
-        }
-        return view;
-    }
-
-    // Carries the dma-heap handle, so the next pass describes it by handle and
-    // the job stays entirely in handle mode.
-    static ImageView dmaScratchView(const DmaHeapBuffer& scratch, PixelFormat format, Size size) {
-        ImageView view = scratchViewCommon(scratch.data(), scratch.wstride(), format, size);
-        view.nativeHandle = scratch.handle();
-        view.dmaFd = scratch.fd();
-        return view;
-    }
-
-    static ImageView heapScratchView(const std::uint8_t* data, int stride, PixelFormat format,
-                                     Size size) {
-        return scratchViewCommon(data, stride, format, size);
-    }
-
     // Copies scratch content into the caller's buffer, row by row because the
     // strides differ. Takes a pointer and a pixel stride so the dma-heap and
     // heap scratches share one implementation.
@@ -608,16 +529,6 @@ private:
     static std::vector<std::uint8_t>& heapScratch() {
         thread_local std::vector<std::uint8_t> buffer;
         return buffer;
-    }
-    static DmaHeapBuffer& passScratch(int index) {
-        thread_local DmaHeapBuffer first;
-        thread_local DmaHeapBuffer second;
-        return (index % 2 == 0) ? first : second;
-    }
-    static std::vector<std::uint8_t>& passHeapScratch(int index) {
-        thread_local std::vector<std::uint8_t> first;
-        thread_local std::vector<std::uint8_t> second;
-        return (index % 2 == 0) ? first : second;
     }
 };
 
