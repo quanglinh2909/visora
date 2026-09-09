@@ -62,6 +62,13 @@ target_link_libraries(runtime_tests PRIVATE visora::store visora::backends)
 target_include_directories(runtime_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME runtime_tests COMMAND runtime_tests)
 
+# WebRTC negotiation: payload types, DTLS roles, ICE candidates, SSRC pinning.
+# Pure text and pure launch strings — no browser, no network, no webrtcbin.
+add_executable(webrtc_tests webrtc_tests.cpp)
+target_link_libraries(webrtc_tests PRIVATE visora::media visora::backends)
+target_include_directories(webrtc_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME webrtc_tests COMMAND webrtc_tests)
+
 # The recording timeline: instants, segment arithmetic, the HLS playlist and
 # HTTP range parsing. All pure — no camera, no disk, no database.
 if(VISORA_WITH_API)

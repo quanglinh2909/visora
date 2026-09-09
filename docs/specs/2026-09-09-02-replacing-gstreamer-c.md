@@ -84,7 +84,8 @@ RK3588 board.
 | 5b | RTSP restream runtime: shared server, codec probe, retry with backoff, status reported back | done |
 | 5c | Camera state websocket, stream start/stop/restart endpoints, snapshot | done |
 | 6 | Recording and playback: shared source, segments, HLS, range requests, retention, thumbnail | done |
-| 7 | WebRTC and MoQ restream; the RTSP mount moves onto the shared source | next |
+| 7a | WebRTC live viewing (WHEP), passthrough and transcode | done |
+| 7b | MoQ feed, playback over WebRTC | next |
 | 8 | Vision: model catalog, stages, transforms, AI job pipeline, ONNX Runtime backend | |
 | 9 | Cutover: run both against the same cameras and database, compare, then retire `gstreamer_c` | |
 
@@ -104,6 +105,12 @@ Runnable today, on x86_64 and on RK3588:
   play back as HLS with byte-range seeking, a scrub thumbnail and day-based
   retention. Verified against a real PostgreSQL and decoded end to end by
   ffmpeg.
+- Browsers watch cameras over WebRTC (WHEP): one POST of an SDP offer, an
+  answer, a DELETE to hang up. Passthrough when the browser takes the camera's
+  codec, and transcoding through the codec providers when it does not — so the
+  same code re-encodes with MPP on a board and VA-API on a workstation.
+  Verified with a real WebRTC client: DTLS, ICE, SRTP and decoded frames, on
+  both paths.
 - Live stream status is readable (`GET /camera-streams`,
   `GET /cameras/{id}/stream`), controllable (`POST .../stream/{start,stop,restart}`),
   pushed as it changes (`GET /ws/camera-state`), and a camera can be
@@ -114,7 +121,7 @@ Runnable today, on x86_64 and on RK3588:
 - Ten test suites, all passing on both architectures.
 
 Not yet ported, and the reason to keep running `gstreamer_c` in production:
-WebRTC, MoQ, motion detection and the entire AI pipeline.
+MoQ, playback over WebRTC, motion detection and the entire AI pipeline.
 
 Two things from step 6 wait for a later step on purpose, because they need a
 producer that does not exist yet:

@@ -37,6 +37,12 @@ struct StreamConfig {
     int sourceLatencyMs = 300;
     std::string recordingDir = "recordings";
     std::string motionSnapshotDir = "motion-snapshots";
+
+    // Empty means "host candidates only", which is right for a LAN and wrong
+    // for anything crossing a NAT. Left empty by default because a STUN server
+    // that is unreachable costs every WHEP request a timeout.
+    std::string stunServer;
+    std::string turnServer;
 };
 
 struct Config {

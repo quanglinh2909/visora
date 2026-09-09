@@ -316,4 +316,39 @@ VS_TEST(resolving_reports_nothing_when_no_provider_offers_the_role) {
     restoreRealProbe();
 }
 
+// A provider offers three INDEPENDENT roles, and a machine routinely has the
+// elements for some and not others. Measured on an RK3588 board: jpegenc and
+// avdec_h264 present, x264enc absent — and because the software provider gated
+// every role on x264enc, the board lost JPEG entirely and both snapshots and
+// thumbnails answered 503 on a machine that could encode one perfectly well.
+
+VS_TEST(a_missing_encoder_does_not_take_the_jpeg_encoder_with_it) {
+    // Exactly the board: libav and jpegenc, no x264enc.
+    media::setElementProbe([](const std::string& factory) {
+        return factory == "avdec_h264" || factory == "avdec_h265" || factory == "jpegenc";
+    });
+
+    VS_CHECK(media::resolveJpegEncoder(85).has_value());
+    VS_CHECK(media::resolveDecoder(Codec::H264).has_value());
+    // And it is still honest about the encoder it does not have.
+    VS_CHECK(!media::resolveEncoder(Codec::H264, EncoderParams{}).has_value());
+
+    media::setElementProbe(nullptr);
+}
+
+VS_TEST(a_provider_never_resolves_to_an_element_that_is_not_installed) {
+    // The general form of the bug above: availability is one boolean per
+    // provider, so a role must be checked on its own before it is handed out.
+    media::setElementProbe([](const std::string& factory) { return factory == "jpegenc"; });
+
+    VS_CHECK(!media::resolveDecoder(Codec::H264).has_value());
+    VS_CHECK(!media::resolveDecoder(Codec::H265).has_value());
+    VS_CHECK(!media::resolveEncoder(Codec::H264, EncoderParams{}).has_value());
+    const auto jpeg = media::resolveJpegEncoder(85);
+    VS_CHECK(jpeg.has_value());
+    if (jpeg) VS_CHECK(jpeg->spec.factory() == "jpegenc");
+
+    media::setElementProbe(nullptr);
+}
+
 VS_MAIN()

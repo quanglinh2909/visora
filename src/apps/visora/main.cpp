@@ -19,6 +19,7 @@
 #include "api/controllers/CameraController.hpp"
 #include "api/controllers/CameraStreamController.hpp"
 #include "api/controllers/PlaybackController.hpp"
+#include "api/controllers/WebRtcController.hpp"
 #include "api/controllers/WebSocketController.hpp"
 #include "api/ws/CameraStateFeed.hpp"
 #include "core/Log.hpp"
@@ -31,6 +32,7 @@
 #include "media/recording/RecordingManager.hpp"
 #include "media/recording/ThumbnailExtractor.hpp"
 #include "media/source/CameraSourceRegistry.hpp"
+#include "media/webrtc/WebRtcService.hpp"
 #include "media/stream/RtspServer.hpp"
 #include "media/stream/SnapshotGrabber.hpp"
 #include "media/stream/StreamManager.hpp"
@@ -272,8 +274,14 @@ int main(int argc, char** argv) {
         auto playback = std::make_shared<media::PlaybackService>(
             playbackConfig, cameras, recordingRepository, media::makeGstThumbnailExtractor());
 
+        media::WhepConfig whepConfig;
+        whepConfig.stunServer = config.value().stream.stunServer;
+        whepConfig.turnServer = config.value().stream.turnServer;
+        auto webrtc = std::make_shared<media::WebRtcService>(whepConfig, cameras, sources);
+
         streams->start();
         recordings->start();
+        webrtc->start();
 
         // Everything already in the database starts streaming without waiting
         // for someone to touch the API.
@@ -296,6 +304,8 @@ int main(int argc, char** argv) {
         auto playbackController =
             api::PlaybackController::createShared(objectMapper, playback);
         router->addController(playbackController);
+        auto webrtcController = api::WebRtcController::createShared(objectMapper, webrtc);
+        router->addController(webrtcController);
 
         auto cameraStateHandler = oatpp::websocket::ConnectionHandler::createShared();
         cameraStateHandler->setSocketInstanceListener(
@@ -313,6 +323,7 @@ int main(int argc, char** argv) {
         endpoints.append(cameraController->getEndpoints());
         endpoints.append(streamController->getEndpoints());
         endpoints.append(playbackController->getEndpoints());
+        endpoints.append(webrtcController->getEndpoints());
         // The websocket controller is deliberately absent: OpenAPI cannot
         // describe an upgrade handshake, and listing it as a GET that returns
         // 101 misleads whoever reads the docs.
@@ -355,6 +366,9 @@ int main(int argc, char** argv) {
         // whatever segment it is writing. Then streams, whose worker touches
         // the camera service, which the repository outlives only until this
         // scope ends.
+        // Viewers first: each holds a shared source, and a source that is still
+        // referenced cannot be closed.
+        webrtc->stop();
         recordings->stop();
         streams->stop();
         rtspServer->stop();

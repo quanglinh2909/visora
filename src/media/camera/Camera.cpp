@@ -76,7 +76,20 @@ CameraDiff apply(const CameraChanges& changes, Camera& camera) {
     if (assign(changes.hardware, camera.hardware)) diff.sourceChanged = true;
 
     if (assign(changes.recordingEnabled, camera.recordingEnabled)) diff.recordingChanged = true;
-    if (assign(changes.recordingMode, camera.recordingMode)) diff.recordingChanged = true;
+    if (assign(changes.recordingMode, camera.recordingMode)) {
+        diff.recordingChanged = true;
+        // The two switches say the same thing for historical reasons: the
+        // boolean predates the mode. Choosing a mode is the more specific
+        // statement, so it sets the boolean to match.
+        //
+        // Without this a camera created with recordingMode "continuous" showed
+        // recordingEnabled false in the API while it was demonstrably writing
+        // segments — observed on the RK3588 board. An operator cannot be shown
+        // two answers to one question.
+        if (!changes.recordingEnabled.has_value()) {
+            camera.recordingEnabled = camera.recordingMode != RecordingMode::Off;
+        }
+    }
     if (assign(changes.segmentSeconds, camera.segmentSeconds)) diff.recordingChanged = true;
 
     if (assign(changes.motionEnabled, camera.motionEnabled)) diff.motionChanged = true;

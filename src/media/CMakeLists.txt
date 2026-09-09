@@ -8,6 +8,9 @@ pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET
     gstreamer-rtsp-1.0
     gstreamer-rtsp-server-1.0
     gstreamer-app-1.0
+    gstreamer-sdp-1.0
+    gstreamer-rtp-1.0
+    gstreamer-webrtc-1.0
 )
 
 add_library(visora_media STATIC
@@ -26,6 +29,10 @@ add_library(visora_media STATIC
     recording/RecordingManager.cpp
     recording/RecordingSession.cpp
     recording/ThumbnailExtractor.cpp
+    webrtc/Sdp.cpp
+    webrtc/WebRtcService.cpp
+    webrtc/WhepSession.cpp
+    webrtc/WhepPipeline.cpp
     source/CameraSourceRegistry.cpp
     source/RtspEncodedSource.cpp
     camera/CameraRuntime.cpp

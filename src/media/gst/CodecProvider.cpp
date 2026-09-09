@@ -69,6 +69,20 @@ namespace {
 
 // Logged once per role so a machine quietly doing software encode is visible in
 // the log without drowning it at frame rate.
+// A provider may name an element it does not have.
+//
+// Availability is one boolean per provider, but a provider offers THREE
+// independent roles, and a machine routinely has some and not others. Measured
+// on an RK3588 board: jpegenc and avdec_h264 installed, x264enc not — and
+// because the software provider gated all three roles on x264enc, the board
+// lost JPEG entirely. Snapshots and thumbnails answered 503 on a machine that
+// could encode a JPEG perfectly well.
+//
+// Checking here rather than trusting available() fixes it for every provider at
+// once, including ones written later: a role resolves to an element that exists
+// or it resolves to nothing.
+bool isInstalled(const ElementSpec& spec) { return elementExists(spec.factory()); }
+
 void noteOnce(const char* role, const std::string& providerId, const char* what) {
     static std::mutex mutex;
     static std::set<std::string> seen;
@@ -84,7 +98,8 @@ void noteOnce(const char* role, const std::string& providerId, const char* what)
 
 std::optional<ResolvedElement> resolveDecoder(Codec codec) {
     for (CodecProvider* provider : availableCodecProviders()) {
-        if (auto spec = provider->decoder(codec)) {
+        auto spec = provider->decoder(codec);
+        if (spec && isInstalled(*spec)) {
             noteOnce("decoder", std::string(provider->id()), toString(codec));
             return ResolvedElement{std::move(*spec), std::string(provider->id())};
         }
@@ -94,7 +109,8 @@ std::optional<ResolvedElement> resolveDecoder(Codec codec) {
 
 std::optional<ResolvedElement> resolveEncoder(Codec codec, const EncoderParams& params) {
     for (CodecProvider* provider : availableCodecProviders()) {
-        if (auto spec = provider->encoder(codec, params)) {
+        auto spec = provider->encoder(codec, params);
+        if (spec && isInstalled(*spec)) {
             noteOnce("encoder", std::string(provider->id()), toString(codec));
             return ResolvedElement{std::move(*spec), std::string(provider->id())};
         }
@@ -104,7 +120,8 @@ std::optional<ResolvedElement> resolveEncoder(Codec codec, const EncoderParams& 
 
 std::optional<ResolvedElement> resolveJpegEncoder(int quality) {
     for (CodecProvider* provider : availableCodecProviders()) {
-        if (auto spec = provider->jpegEncoder(quality)) {
+        auto spec = provider->jpegEncoder(quality);
+        if (spec && isInstalled(*spec)) {
             noteOnce("jpeg encoder", std::string(provider->id()), "jpeg");
             return ResolvedElement{std::move(*spec), std::string(provider->id())};
         }
@@ -114,7 +131,8 @@ std::optional<ResolvedElement> resolveJpegEncoder(int quality) {
 
 std::string encoderInputFormatFor(Codec codec, const EncoderParams& params) {
     for (CodecProvider* provider : availableCodecProviders()) {
-        if (provider->encoder(codec, params)) return provider->encoderInputFormat();
+        auto spec = provider->encoder(codec, params);
+        if (spec && isInstalled(*spec)) return provider->encoderInputFormat();
     }
     return "I420";
 }

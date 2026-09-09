@@ -322,4 +322,35 @@ VS_TEST(runtime_state_is_stamped_by_the_service_not_by_the_adapter) {
     VS_CHECK(service.get(id).value().lastChangedAt == "2020-01-01T00:00:00Z");
 }
 
+VS_TEST(choosing_a_recording_mode_keeps_the_older_boolean_in_step) {
+    // The two switches say the same thing; the mode is the more specific one.
+    // A camera created with mode "continuous" used to report recordingEnabled
+    // false while it was writing segments — two answers to one question.
+    Fixture fixture;
+    CameraService service = fixture.makeService();
+
+    CameraChanges changes = validCreate();
+    changes.recordingMode = RecordingMode::Continuous;
+    auto created = service.create(changes);
+    VS_CHECK(created.ok());
+    if (!created.ok()) return;
+    VS_CHECK(created.value().recordingEnabled);
+
+    // Turning the mode off turns the boolean off with it.
+    CameraChanges off;
+    off.recordingMode = RecordingMode::Off;
+    auto updated = service.update(created.value().id, off);
+    VS_CHECK(updated.ok());
+    if (updated.ok()) VS_CHECK(!updated.value().recordingEnabled);
+
+    // An explicit boolean in the SAME request still wins: the caller said both,
+    // and second-guessing them would be worse than honouring what they asked.
+    CameraChanges both;
+    both.recordingMode = RecordingMode::Continuous;
+    both.recordingEnabled = false;
+    auto conflicting = service.update(created.value().id, both);
+    VS_CHECK(conflicting.ok());
+    if (conflicting.ok()) VS_CHECK(!conflicting.value().recordingEnabled);
+}
+
 VS_MAIN()

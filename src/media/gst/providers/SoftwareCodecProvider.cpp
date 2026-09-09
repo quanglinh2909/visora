@@ -5,6 +5,7 @@
 // slower — the same role CpuImageOps plays for pixels.
 
 #include <memory>
+#include <string>
 
 #include "media/gst/CodecProvider.hpp"
 #include "media/gst/ElementAvailability.hpp"
@@ -17,10 +18,20 @@ public:
     std::string_view id() const override { return "software"; }
 
     bool available() const override {
-        // libav decoders ship with gstreamer1.0-libav; x264enc with -ugly. A
-        // machine could have one and not the other, so this reports honestly
-        // rather than assuming software is a given.
-        return elementExists("avdec_h264") && elementExists("x264enc");
+        // ANY of the three roles, not all of them.
+        //
+        // libav decoders ship with gstreamer1.0-libav, x264enc with -ugly, and
+        // jpegenc with -good; a machine routinely has some and not others.
+        // Requiring all three cost an RK3588 board its JPEG encoder — it has
+        // jpegenc and avdec_h264 but no x264enc, so the whole provider was
+        // dropped and snapshots and thumbnails answered 503 on a machine that
+        // could encode a JPEG perfectly well.
+        //
+        // Which roles actually work is decided per role, in resolveDecoder /
+        // resolveEncoder / resolveJpegEncoder, which check that the element a
+        // provider names is installed.
+        return elementExists("avdec_h264") || elementExists("x264enc") ||
+               elementExists("jpegenc");
     }
 
     std::optional<ElementSpec> decoder(Codec codec) const override {
@@ -31,6 +42,7 @@ public:
         }
         return std::nullopt;
     }
+
 
     std::optional<ElementSpec> encoder(Codec codec,
                                        const EncoderParams& params) const override {
@@ -58,13 +70,34 @@ public:
 };
 
 core::Probe probeSoftware() {
-    if (!elementExists("avdec_h264")) {
-        return core::Probe::no("avdec_h264 not installed (gstreamer1.0-libav)");
+    // Available when ANY role works, and the description says which.
+    //
+    // These three elements come from three different packages — libav, -ugly
+    // and -good — and a machine routinely has some and not others. Requiring
+    // all of them cost an RK3588 board its JPEG encoder: it has jpegenc and
+    // avdec_h264 but no x264enc, so the provider was excluded entirely and both
+    // snapshots and thumbnails answered 503 on a machine that could encode a
+    // JPEG perfectly well. Which roles actually work is then decided per role,
+    // in resolveDecoder / resolveEncoder / resolveJpegEncoder.
+    const bool decode = elementExists("avdec_h264");
+    const bool encode = elementExists("x264enc");
+    const bool jpeg = elementExists("jpegenc");
+    if (!decode && !encode && !jpeg) {
+        // Names the elements, not just the packages: an operator reading this
+        // on a board needs to know what to look for with gst-inspect.
+        return core::Probe::no("none of avdec_h264, x264enc, jpegenc installed "
+                               "(gstreamer1.0-libav, -plugins-ugly, -plugins-good)");
     }
-    if (!elementExists("x264enc")) {
-        return core::Probe::no("x264enc not installed (gstreamer1.0-plugins-ugly)");
-    }
-    return core::Probe::yes("software codecs (libav decode, x264 encode)");
+
+    std::string roles;
+    const auto add = [&roles](const char* role) {
+        if (!roles.empty()) roles += ", ";
+        roles += role;
+    };
+    if (decode) add("libav decode");
+    if (encode) add("x264 encode");
+    if (jpeg) add("jpeg");
+    return core::Probe::yes("software codecs (" + roles + ')');
 }
 
 const core::Register<CodecProvider> registration{{
