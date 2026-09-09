@@ -29,11 +29,14 @@ add_library(visora_media STATIC
     recording/RecordingManager.cpp
     recording/RecordingSession.cpp
     recording/ThumbnailExtractor.cpp
+    moq/MoqFeed.cpp
+    moq/MoqService.cpp
     webrtc/Sdp.cpp
     webrtc/WebRtcService.cpp
     webrtc/WhepSession.cpp
     webrtc/WhepPipeline.cpp
     source/CameraSourceRegistry.cpp
+    source/PlaybackSource.cpp
     source/RtspEncodedSource.cpp
     camera/CameraRuntime.cpp
     camera/CameraService.cpp

@@ -19,6 +19,7 @@
 #include "api/controllers/CameraController.hpp"
 #include "api/controllers/CameraStreamController.hpp"
 #include "api/controllers/PlaybackController.hpp"
+#include "api/controllers/MoqController.hpp"
 #include "api/controllers/WebRtcController.hpp"
 #include "api/controllers/WebSocketController.hpp"
 #include "api/ws/CameraStateFeed.hpp"
@@ -32,6 +33,7 @@
 #include "media/recording/RecordingManager.hpp"
 #include "media/recording/ThumbnailExtractor.hpp"
 #include "media/source/CameraSourceRegistry.hpp"
+#include "media/moq/MoqService.hpp"
 #include "media/webrtc/WebRtcService.hpp"
 #include "media/stream/RtspServer.hpp"
 #include "media/stream/SnapshotGrabber.hpp"
@@ -277,11 +279,18 @@ int main(int argc, char** argv) {
         media::WhepConfig whepConfig;
         whepConfig.stunServer = config.value().stream.stunServer;
         whepConfig.turnServer = config.value().stream.turnServer;
-        auto webrtc = std::make_shared<media::WebRtcService>(whepConfig, cameras, sources);
+        auto webrtc = std::make_shared<media::WebRtcService>(whepConfig, cameras, sources,
+                                                            recordingRepository);
+
+        media::MoqConfig moqConfig;
+        moqConfig.socketPath = config.value().stream.moqSocketPath;
+        auto moq = std::make_shared<media::MoqService>(moqConfig, cameras, sources,
+                                                       recordingRepository);
 
         streams->start();
         recordings->start();
         webrtc->start();
+        moq->start();
 
         // Everything already in the database starts streaming without waiting
         // for someone to touch the API.
@@ -306,6 +315,8 @@ int main(int argc, char** argv) {
         router->addController(playbackController);
         auto webrtcController = api::WebRtcController::createShared(objectMapper, webrtc);
         router->addController(webrtcController);
+        auto moqController = api::MoqController::createShared(objectMapper, moq);
+        router->addController(moqController);
 
         auto cameraStateHandler = oatpp::websocket::ConnectionHandler::createShared();
         cameraStateHandler->setSocketInstanceListener(
@@ -324,6 +335,7 @@ int main(int argc, char** argv) {
         endpoints.append(streamController->getEndpoints());
         endpoints.append(playbackController->getEndpoints());
         endpoints.append(webrtcController->getEndpoints());
+        endpoints.append(moqController->getEndpoints());
         // The websocket controller is deliberately absent: OpenAPI cannot
         // describe an upgrade handshake, and listing it as a GET that returns
         // 101 misleads whoever reads the docs.
@@ -368,6 +380,7 @@ int main(int argc, char** argv) {
         // scope ends.
         // Viewers first: each holds a shared source, and a source that is still
         // referenced cannot be closed.
+        moq->stop();
         webrtc->stop();
         recordings->stop();
         streams->stop();

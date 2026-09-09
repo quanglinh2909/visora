@@ -91,7 +91,11 @@ struct WhepSession::Impl {
 
     std::atomic<bool> alive{false};
     std::atomic<std::uint64_t> rtpPackets{0};
-    std::atomic<std::int64_t> lastPeerActivityMs{0};
+    // Whether the browser ever answered, and whether it has since gone. Taken
+    // from webrtcbin rather than inferred: outgoing packets say nothing about
+    // whether anyone is still receiving them.
+    std::atomic<bool> everConnected{false};
+    std::atomic<bool> peerGone{false};
     std::int64_t startedAtMs = 0;
 
     bool transcoded = false;
@@ -124,6 +128,29 @@ void WhepSession::Impl::push(GstBuffer* buffer, GstCaps* caps) {
 }
 
 namespace {
+
+void onConnectionStateChanged(GstElement* webrtc, GParamSpec*, gpointer user) {
+    auto* impl = static_cast<WhepSession::Impl*>(user);
+    GstWebRTCPeerConnectionState state = GST_WEBRTC_PEER_CONNECTION_STATE_NEW;
+    g_object_get(webrtc, "connection-state", &state, nullptr);
+
+    switch (state) {
+        case GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTED:
+            impl->everConnected.store(true);
+            break;
+        case GST_WEBRTC_PEER_CONNECTION_STATE_FAILED:
+        case GST_WEBRTC_PEER_CONNECTION_STATE_CLOSED:
+            // A closed tab reaches us as this and nothing else — there is no
+            // DELETE and no error.
+            impl->peerGone.store(true);
+            break;
+        default:
+            // "disconnected" is recoverable: a phone changing network comes
+            // back within seconds, and reaping there would drop a viewer who
+            // was merely walking between access points.
+            break;
+    }
+}
 
 void onIceGatheringChanged(GstElement* webrtc, GParamSpec*, gpointer user) {
     auto* impl = static_cast<WhepSession::Impl*>(user);
@@ -269,6 +296,8 @@ core::Result<std::string> WhepSession::start(const std::string& offerSdp,
 
     g_signal_connect(m_impl->webrtc, "notify::ice-gathering-state",
                      G_CALLBACK(&onIceGatheringChanged), m_impl.get());
+    g_signal_connect(m_impl->webrtc, "notify::connection-state",
+                     G_CALLBACK(&onConnectionStateChanged), m_impl.get());
     tuneIceAgent();
     installRtpProbe();
 
@@ -291,7 +320,6 @@ core::Result<std::string> WhepSession::start(const std::string& offerSdp,
     }
 
     m_impl->startedAtMs = core::nowEpochMs();
-    m_impl->lastPeerActivityMs.store(m_impl->startedAtMs);
     {
         std::lock_guard<std::mutex> lock(m_impl->mutex);
         m_impl->enabled = true;
@@ -457,12 +485,22 @@ core::Result<std::string> WhepSession::negotiate(const std::string& offerSdp,
 
 bool WhepSession::alive() const {
     if (!m_impl->alive.load()) return false;
+    // A live camera source that has failed will produce nothing more, and the
+    // browser should reconnect rather than watch a frozen frame. A PLAYBACK
+    // source stays alive at the end of a recording, because seeking elsewhere
+    // is exactly what the open session is for.
     if (m_source && !m_source->alive()) return false;
 
-    // A browser tab closed without sending DELETE leaves nothing else to notice
-    // it by. Silence for long enough is the only signal there is.
-    const std::int64_t silentMs = core::nowEpochMs() - m_impl->lastPeerActivityMs.load();
-    return silentMs < m_config.peerSilenceTimeoutMs;
+    // A tab closed without a DELETE reaches us as a connection-state change and
+    // nothing else.
+    if (m_impl->peerGone.load()) return false;
+
+    // Never connected at all: give up eventually rather than hold a pipeline
+    // for an offer nobody followed through on.
+    if (!m_impl->everConnected.load()) {
+        return core::nowEpochMs() - m_impl->startedAtMs < m_config.connectTimeoutMs;
+    }
+    return true;
 }
 
 ViewerInfo WhepSession::info() const {

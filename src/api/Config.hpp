@@ -43,6 +43,11 @@ struct StreamConfig {
     // that is unreachable costs every WHEP request a timeout.
     std::string stunServer;
     std::string turnServer;
+
+    // Where the MoQ server listens. Empty disables the feature, which is the
+    // default: most deployments do not run one, and endpoints should say so per
+    // request rather than the service failing at startup.
+    std::string moqSocketPath;
 };
 
 struct Config {

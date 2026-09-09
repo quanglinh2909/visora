@@ -37,9 +37,11 @@ struct WhepConfig {
     // arrived by now is usually one that never will.
     int iceGatherTimeoutMs = 5000;
 
-    // How long a session may receive nothing from the browser before it is
-    // considered gone. A tab closed without a DELETE leaves no other trace.
-    int peerSilenceTimeoutMs = 30000;
+    // How long a session may sit without ever connecting before it is given up
+    // on. Once connected, liveness comes from webrtcbin's own peer connection
+    // state rather than from a clock — a viewer watching quietly for an hour is
+    // not idle, and a timer nobody feeds reaps it anyway.
+    int connectTimeoutMs = 30000;
 };
 
 struct ViewerInfo {

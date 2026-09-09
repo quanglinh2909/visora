@@ -151,6 +151,7 @@ core::Result<Config> loadConfig(const std::string& path) {
         readString(*stream, "motionSnapshotDir", config.stream.motionSnapshotDir);
         readString(*stream, "stunServer", config.stream.stunServer);
         readString(*stream, "turnServer", config.stream.turnServer);
+        readString(*stream, "moqSocketPath", config.stream.moqSocketPath);
     }
     if (const auto* swagger = section(root, "swagger", storage)) {
         readString(*swagger, "title", config.swaggerTitle);

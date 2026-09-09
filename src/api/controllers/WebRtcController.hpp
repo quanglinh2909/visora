@@ -101,6 +101,87 @@ public:
         return createDtoResponse(Status::CODE_200, list);
     }
 
+    // --- watching a recording -------------------------------------------------
+
+    ENDPOINT_INFO(playbackOffer) {
+        info->summary = "Start watching a recording over WebRTC";
+        info->description =
+            "Opens ONE session for the whole timeline. Every later click is a command "
+            "to /playback/{sessionId}/control rather than a new connection — which is "
+            "what makes scrubbing cost the same however much has been recorded.";
+        info->addConsumes<String>("application/sdp");
+        info->addResponse<String>(Status::CODE_201, "application/sdp");
+        info->addResponse(Status::CODE_404, "text/plain");
+    }
+    ENDPOINT("POST", "/cameras/{id}/playback/whep", playbackOffer, PATH(String, id),
+             QUERY(String, at, "at", ""),
+             REQUEST(std::shared_ptr<IncomingRequest>, request)) {
+        media::PlaybackOffer offer;
+        offer.cameraId = id ? *id : std::string();
+        const auto body = request->readBodyToString();
+        offer.sdp = body ? std::string(body->c_str(), body->size()) : std::string();
+        offer.clientAddress = clientAddressOf(request);
+        offer.atMs = at && !at->empty() ? core::parseEpochMs(*at) : core::nowEpochMs();
+        if (offer.atMs < 0) abortWith(core::invalidArgument("'at' is not a timestamp"));
+
+        const auto answer = valueOrAbort(m_webrtc->offerPlayback(offer));
+        auto response = createResponse(Status::CODE_201, answer.sdp.c_str());
+        response->putHeader(Header::CONTENT_TYPE, "application/sdp");
+        response->putHeader("Location", answer.location.c_str());
+        addCors(response);
+        return response;
+    }
+
+    ENDPOINT_INFO(playbackControl) {
+        info->summary = "Seek, pause, resume or change speed";
+        info->addConsumes<oatpp::Object<PlaybackControlDto>>("application/json");
+        info->addResponse<oatpp::Object<PlaybackStatusDto>>(Status::CODE_200,
+                                                            "application/json");
+        info->addResponse(Status::CODE_400, "text/plain");
+        info->addResponse(Status::CODE_404, "text/plain");
+    }
+    ENDPOINT("POST", "/playback/{sessionId}/control", playbackControl, PATH(String, sessionId),
+             BODY_DTO(oatpp::Object<PlaybackControlDto>, body)) {
+        const std::string id = sessionId ? *sessionId : std::string();
+        okOrAbort(m_webrtc->control(id, toCommand(body)));
+        return createDtoResponse(Status::CODE_200,
+                                 toStatus(id, valueOrAbort(m_webrtc->playbackState(id))));
+    }
+
+    ENDPOINT_INFO(playbackStatus) {
+        info->summary = "Where a playback session has got to";
+        info->addResponse<oatpp::Object<PlaybackStatusDto>>(Status::CODE_200,
+                                                            "application/json");
+        info->addResponse(Status::CODE_404, "text/plain");
+    }
+    ENDPOINT("GET", "/playback/{sessionId}", playbackStatus, PATH(String, sessionId)) {
+        const std::string id = sessionId ? *sessionId : std::string();
+        return createDtoResponse(Status::CODE_200,
+                                 toStatus(id, valueOrAbort(m_webrtc->playbackState(id))));
+    }
+
+    ENDPOINT_INFO(playbackStop) {
+        info->summary = "End a playback session";
+        info->addResponse(Status::CODE_204, "text/plain");
+    }
+    ENDPOINT("DELETE", "/playback/{sessionId}", playbackStop, PATH(String, sessionId)) {
+        okOrAbort(m_webrtc->close(sessionId ? *sessionId : std::string()));
+        auto response = createResponse(Status::CODE_204, "");
+        addCors(response);
+        return response;
+    }
+
+    ENDPOINT("OPTIONS", "/cameras/{id}/playback/whep", playbackOfferOptions, PATH(String, id)) {
+        return preflight();
+    }
+    ENDPOINT("OPTIONS", "/playback/{sessionId}", playbackStopOptions, PATH(String, sessionId)) {
+        return preflight();
+    }
+    ENDPOINT("OPTIONS", "/playback/{sessionId}/control", playbackControlOptions,
+             PATH(String, sessionId)) {
+        return preflight();
+    }
+
     // CORS preflight. Without these a page served from anywhere but this origin
     // never gets to send the POST at all.
     ENDPOINT("OPTIONS", "/cameras/{id}/whep", whepOptions, PATH(String, id)) {
@@ -112,6 +193,41 @@ public:
     }
 
 private:
+    static media::PlaybackCommand toCommand(const oatpp::Object<PlaybackControlDto>& dto) {
+        media::PlaybackCommand command;
+        const std::string action =
+            dto && dto->action ? std::string(dto->action->c_str()) : std::string("seek");
+        if (action == "pause") {
+            command.action = media::PlaybackCommand::Action::Pause;
+        } else if (action == "resume") {
+            command.action = media::PlaybackCommand::Action::Resume;
+        } else if (action == "rate") {
+            command.action = media::PlaybackCommand::Action::Rate;
+            command.rate = dto && dto->rate ? *dto->rate : 1.0;
+        } else if (action == "seek") {
+            command.action = media::PlaybackCommand::Action::Seek;
+            command.atMs = dto && dto->at ? core::parseEpochMs(dto->at->c_str())
+                                          : core::nowEpochMs();
+            if (command.atMs < 0) {
+                abortWith(core::invalidArgument("'at' is not a timestamp"));
+            }
+        } else {
+            abortWith(core::invalidArgument("unknown action: " + action));
+        }
+        return command;
+    }
+
+    static oatpp::Object<PlaybackStatusDto> toStatus(const std::string& sessionId,
+                                                     const media::PlaybackState& state) {
+        auto dto = PlaybackStatusDto::createShared();
+        dto->sessionId = sessionId;
+        dto->position = core::toIso8601Millis(state.positionMs);
+        dto->rate = state.rate;
+        dto->paused = state.paused;
+        dto->ended = state.ended;
+        return dto;
+    }
+
     // The address the request came from, preferring the proxy's own record of
     // it. Only ever used to substitute for an unresolvable mDNS name in an ICE
     // candidate, so a wrong guess costs one candidate, not the session.

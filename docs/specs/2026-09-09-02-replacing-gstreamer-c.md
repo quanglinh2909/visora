@@ -18,6 +18,26 @@ for structure.
 Three things are visible outside this program. Everything under them may be
 rewritten freely; these may not change without coordinating a deployment.
 
+### 0. The MoQ frame format — LOCKED AND TESTED
+
+A separately deployed QUIC server reads frames off a Unix socket:
+
+```
+header      "MOQF1 " + one line of JSON + '\n'
+each frame  u8 flags | u64 pts_us | u32 length | Annex-B bytes
+flags bit 0 keyframe
+```
+
+All numbers big-endian. Pinned byte by byte in `tests/moq_tests.cpp` and
+verified on 2026-09-09 against a consumer that decodes it the way the hub does:
+header parsed, 201 frames, every one Annex-B aligned, PTS span matching real
+time.
+
+A slow reader loses picture and nothing else: the writer keeps the tail of at
+most ONE partially-written frame and drops later frames until it clears. A frame
+is never sent partially and abandoned — the reader would lose alignment for the
+rest of the session.
+
 ### 1. The inference result wire format — LOCKED AND TESTED
 
 A Python consumer (`gstreamer_ai_python`) reads results off a Unix socket and is
@@ -85,8 +105,8 @@ RK3588 board.
 | 5c | Camera state websocket, stream start/stop/restart endpoints, snapshot | done |
 | 6 | Recording and playback: shared source, segments, HLS, range requests, retention, thumbnail | done |
 | 7a | WebRTC live viewing (WHEP), passthrough and transcode | done |
-| 7b | MoQ feed, playback over WebRTC | next |
-| 8 | Vision: model catalog, stages, transforms, AI job pipeline, ONNX Runtime backend | |
+| 7b | MoQ feed, playback over WebRTC | done |
+| 8 | Vision: model catalog, stages, transforms, AI job pipeline, motion detection, ONNX Runtime backend | next |
 | 9 | Cutover: run both against the same cameras and database, compare, then retire `gstreamer_c` | |
 
 Step 3 came before the pipeline work on purpose. Locking the external contract
@@ -105,6 +125,11 @@ Runnable today, on x86_64 and on RK3588:
   play back as HLS with byte-range seeking, a scrub thumbnail and day-based
   retention. Verified against a real PostgreSQL and decoded end to end by
   ffmpeg.
+- Recordings play back over the SAME WebRTC transport, with seek, pause and
+  speed on a session that is opened once. At 4x and above only keyframes are
+  sent, so scrubbing gets smoother as it gets faster.
+- MoQ feeds carry frames to the QUIC server over a Unix socket, in a format
+  pinned byte by byte and verified against a real consumer.
 - Browsers watch cameras over WebRTC (WHEP): one POST of an SDP offer, an
   answer, a DELETE to hang up. Passthrough when the browser takes the camera's
   codec, and transcoding through the codec providers when it does not — so the
@@ -121,7 +146,9 @@ Runnable today, on x86_64 and on RK3588:
 - Ten test suites, all passing on both architectures.
 
 Not yet ported, and the reason to keep running `gstreamer_c` in production:
-MoQ, playback over WebRTC, motion detection and the entire AI pipeline.
+motion detection and the entire AI pipeline.
+
+34 of the 49 endpoints are done.
 
 Two things from step 6 wait for a later step on purpose, because they need a
 producer that does not exist yet:
