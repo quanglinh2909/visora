@@ -21,6 +21,7 @@
 
 #include "core/Result.hpp"
 #include "media/ai/FrameTap.hpp"
+#include "media/ai/JpegDecoder.hpp"
 #include "media/ai/JpegEncoder.hpp"
 #include "media/camera/Camera.hpp"
 #include "media/source/CameraSourceRegistry.hpp"
@@ -96,6 +97,19 @@ public:
     void removeJob(const std::string& jobId);
 
     std::vector<AiJobStatus> statuses() const;
+
+    // Runs a stage tree over ONE uploaded image, with no camera involved.
+    //
+    // The point of it: an operator choosing a model, a confidence or a class
+    // filter can try the thing on a picture and see what comes back, instead of
+    // pointing a job at a camera and waiting for something to walk past.
+    //
+    // The SAME StageRunner as the live path, so what it shows is what a job
+    // would do — a separate implementation would eventually disagree with the
+    // one that matters.
+    core::Result<std::vector<vision::Detection>> runOnce(
+        const std::vector<vision::AiStage>& stages, const std::uint8_t* jpeg,
+        std::size_t size);
 
     // Something worth keeping footage of happened. Wired to the recording
     // manager, so an AI detection can trigger event-based recording.

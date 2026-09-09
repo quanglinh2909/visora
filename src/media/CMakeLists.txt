@@ -32,6 +32,7 @@ add_library(visora_media STATIC
     recording/ThumbnailExtractor.cpp
     ai/AiRuntime.cpp
     ai/FrameTap.cpp
+    ai/JpegDecoder.cpp
     ai/JpegEncoder.cpp
     ai/MotionEventRecorder.cpp
     moq/MoqFeed.cpp

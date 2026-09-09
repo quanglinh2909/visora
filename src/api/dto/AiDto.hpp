@@ -91,6 +91,38 @@ class AiModelDto : public oatpp::DTO {
     DTO_FIELD(UInt64, sizeBytes);
 };
 
+class DetectionDto : public oatpp::DTO {
+    DTO_INIT(DetectionDto, DTO)
+
+    DTO_FIELD(Float32, x1);
+    DTO_FIELD(Float32, y1);
+    DTO_FIELD(Float32, x2);
+    DTO_FIELD(Float32, y2);
+    DTO_FIELD(Float32, score);
+    DTO_FIELD(Int32, classId);
+    DTO_FIELD_INFO(text) { info->description = "A label, when the model carries one"; }
+    DTO_FIELD(String, text);
+    DTO_FIELD_INFO(stage) { info->description = "Which stage produced it"; }
+    DTO_FIELD(Int32, stage);
+    DTO_FIELD(List<oatpp::Object<DetectionDto>>, children);
+};
+
+class InferenceRequestDto : public oatpp::DTO {
+    DTO_INIT(InferenceRequestDto, DTO)
+
+    DTO_FIELD_INFO(image) { info->description = "A JPEG, base64-encoded"; }
+    DTO_FIELD(String, image);
+    DTO_FIELD(List<oatpp::Object<AiStageDto>>, stages);
+};
+
+class InferenceResultDto : public oatpp::DTO {
+    DTO_INIT(InferenceResultDto, DTO)
+
+    DTO_FIELD(List<oatpp::Object<DetectionDto>>, detections);
+    DTO_FIELD_INFO(tookMs) { info->description = "Including loading the models"; }
+    DTO_FIELD(Float64, tookMs);
+};
+
 }  // namespace visora::api
 
 #include OATPP_CODEGEN_END(DTO)

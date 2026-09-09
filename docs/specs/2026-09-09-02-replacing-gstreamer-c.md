@@ -110,7 +110,7 @@ RK3588 board.
 | 8b | AI runtime, jobs, REST surface | done |
 | 8c | ONNX Runtime backend | done |
 | 8d | Motion detection, motion events, `/ws/motion-events` | done |
-| 9 | Cutover: run both against the same cameras and database, compare | next |
+| 9 | Cutover: run both against the same cameras and database, compare | plan written — `2026-09-09-03-cutover.md` |
 | 9 | Cutover: run both against the same cameras and database, compare, then retire `gstreamer_c` | |
 
 Step 3 came before the pipeline work on purpose. Locking the external contract
@@ -159,7 +159,7 @@ Not yet ported: the model types beyond YOLOv8 detection
 (pose, segmentation, face recognition, the PP-OCR family). Each is now one
 file — see `vision/models/Yolov8Detect.cpp` for the shape.
 
-34 of the 49 endpoints are done.
+48 of the 49 endpoints are done; the one that is not is a debug hook the predecessor used to fake an AI event, and `POST /cameras/{id}/ai-event` is the real feature that replaces it.
 
 Two things from step 6 wait for a later step on purpose, because they need a
 producer that does not exist yet:

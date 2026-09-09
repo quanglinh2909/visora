@@ -16,6 +16,7 @@
 #include "api/HttpError.hpp"
 #include "api/mappers/StreamStatusMapper.hpp"
 #include "media/camera/CameraRuntime.hpp"
+#include "media/recording/RecordingManager.hpp"
 
 #include "oatpp/core/macro/codegen.hpp"
 #include "oatpp/parser/json/mapping/ObjectMapper.hpp"
@@ -28,15 +29,18 @@ namespace visora::api {
 class CameraStreamController : public oatpp::web::server::api::ApiController {
 public:
     CameraStreamController(std::shared_ptr<ObjectMapper> objectMapper,
-                           std::shared_ptr<media::CameraRuntime> runtime)
+                           std::shared_ptr<media::CameraRuntime> runtime,
+                           std::shared_ptr<media::RecordingManager> recordings)
         : oatpp::web::server::api::ApiController(std::move(objectMapper)),
-          m_runtime(std::move(runtime)) {}
+          m_runtime(std::move(runtime)),
+          m_recordings(std::move(recordings)) {}
 
     static std::shared_ptr<CameraStreamController> createShared(
         std::shared_ptr<ObjectMapper> objectMapper,
-        std::shared_ptr<media::CameraRuntime> runtime) {
-        return std::make_shared<CameraStreamController>(std::move(objectMapper),
-                                                        std::move(runtime));
+        std::shared_ptr<media::CameraRuntime> runtime,
+        std::shared_ptr<media::RecordingManager> recordings) {
+        return std::make_shared<CameraStreamController>(
+            std::move(objectMapper), std::move(runtime), std::move(recordings));
     }
 
     ENDPOINT_INFO(listStreams) {
@@ -109,10 +113,30 @@ public:
         return response;
     }
 
+    ENDPOINT_INFO(noteAiEvent) {
+        info->summary = "Tell the recorder something happened on this camera";
+        info->description =
+            "For a system OUTSIDE Visora that decided something is worth keeping — an "
+            "access-control reader, an alarm panel, an analytics service of its own. It "
+            "enters the same gate motion and the built-in detectors use, so a camera set "
+            "to record only around events keeps the footage around this moment, "
+            "including the seconds BEFORE it.";
+        info->addResponse(Status::CODE_204, "text/plain");
+        info->addResponse(Status::CODE_404, "text/plain");
+    }
+    ENDPOINT("POST", "/cameras/{id}/ai-event", noteAiEvent, PATH(String, id)) {
+        const std::string cameraId = pathId(id);
+        // Checked, so a typo is a 404 rather than an event nothing ever sees.
+        valueOrAbort(m_runtime->statusOf(cameraId));
+        m_recordings->noteEvent(cameraId);
+        return createResponse(Status::CODE_204, "");
+    }
+
 private:
     static std::string pathId(const String& id) { return id ? *id : std::string(); }
 
     std::shared_ptr<media::CameraRuntime> m_runtime;
+    std::shared_ptr<media::RecordingManager> m_recordings;
 };
 
 }  // namespace visora::api

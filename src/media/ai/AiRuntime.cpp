@@ -442,6 +442,25 @@ void AiRuntime::removeJob(const std::string& jobId) {
     worker->jpeg.stop();
 }
 
+core::Result<std::vector<vision::Detection>> AiRuntime::runOnce(
+    const std::vector<vision::AiStage>& stages, const std::uint8_t* jpeg, std::size_t size) {
+    JpegDecoder decoder;
+    const core::Status ready = decoder.start();
+    if (!ready.ok()) return ready.error();
+
+    auto image = decoder.decode(jpeg, size);
+    if (!image) return image.error();
+
+    // Loaded per request rather than cached. This is a tuning aid used a few
+    // times a minute, and a cache keyed on a stage tree would be a second place
+    // for a stale model to live.
+    vision::StageRunner runner;
+    const core::Status loaded = runner.init(stages, "inference/run");
+    if (!loaded.ok()) return loaded.error();
+
+    return runner.run(image.value().view());
+}
+
 std::vector<AiJobStatus> AiRuntime::statuses() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::vector<AiJobStatus> out;

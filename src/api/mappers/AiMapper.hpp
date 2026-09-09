@@ -7,6 +7,7 @@
 #include "api/dto/AiDto.hpp"
 #include "media/ai/AiRuntime.hpp"
 #include "vision/AiJob.hpp"
+#include "vision/Detection.hpp"
 
 namespace visora::api {
 
@@ -20,5 +21,9 @@ oatpp::List<oatpp::Object<AiJobDto>> toDtoList(
     const std::vector<media::AiJobStatus>& statuses);
 
 vision::AiJobChanges toChanges(const oatpp::Object<AiJobDto>& dto);
+
+oatpp::Object<DetectionDto> toDetectionDto(const vision::Detection& detection);
+oatpp::List<oatpp::Object<DetectionDto>> toDetectionDtoList(
+    const std::vector<vision::Detection>& detections);
 
 }  // namespace visora::api

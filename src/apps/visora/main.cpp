@@ -369,7 +369,7 @@ int main(int argc, char** argv) {
         auto cameraController = api::CameraController::createShared(objectMapper, cameras);
         router->addController(cameraController);
         auto streamController =
-            api::CameraStreamController::createShared(objectMapper, runtime);
+            api::CameraStreamController::createShared(objectMapper, runtime, recordings);
         router->addController(streamController);
         auto playbackController =
             api::PlaybackController::createShared(objectMapper, playback);

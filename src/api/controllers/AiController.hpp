@@ -23,6 +23,8 @@
 #include "oatpp/parser/json/mapping/ObjectMapper.hpp"
 #include "oatpp/web/server/api/ApiController.hpp"
 
+#include <cctype>
+#include <chrono>
 #include <filesystem>
 
 #include OATPP_CODEGEN_BEGIN(ApiController)
@@ -133,6 +135,43 @@ public:
         return createDtoResponse(Status::CODE_200, toDto(job, statusOf(job.id).get()));
     }
 
+    ENDPOINT_INFO(runInference) {
+        info->summary = "Try a stage tree on one uploaded image";
+        info->description =
+            "Runs the SAME stage runner the live jobs use, so what comes back is what a "
+            "job would do. Body: {\"image\": \"<base64 jpeg>\", \"stages\": [...]}.";
+        info->addConsumes<oatpp::Object<InferenceRequestDto>>("application/json");
+        info->addResponse<oatpp::Object<InferenceResultDto>>(Status::CODE_200,
+                                                              "application/json");
+        info->addResponse(Status::CODE_400, "text/plain");
+        info->addResponse(Status::CODE_503, "text/plain");
+    }
+    ENDPOINT("POST", "/inference/run", runInference,
+             BODY_DTO(oatpp::Object<InferenceRequestDto>, body)) {
+        if (!body || body->image.getPtr() == nullptr || body->image->empty()) {
+            abortWith(core::invalidArgument("an image is required"));
+        }
+        const std::vector<std::uint8_t> jpeg = decodeBase64(*body->image);
+        if (jpeg.empty()) abortWith(core::invalidArgument("the image is not valid base64"));
+
+        auto dto = AiJobDto::createShared();
+        dto->stages = body->stages;
+        const vision::AiJobChanges changes = toChanges(dto);
+        if (!changes.stages.has_value()) {
+            abortWith(core::invalidArgument("stages are required"));
+        }
+
+        const auto began = std::chrono::steady_clock::now();
+        auto detections =
+            valueOrAbort(m_runtime->runOnce(*changes.stages, jpeg.data(), jpeg.size()));
+        const auto took = std::chrono::steady_clock::now() - began;
+
+        auto result = InferenceResultDto::createShared();
+        result->tookMs = std::chrono::duration<double, std::milli>(took).count();
+        result->detections = toDetectionDtoList(detections);
+        return createDtoResponse(Status::CODE_200, result);
+    }
+
     // --- the catalogue ---------------------------------------------------------
 
     ENDPOINT_INFO(listModelTypes) {
@@ -204,6 +243,33 @@ public:
 
 private:
     static std::string pathId(const String& id) { return id ? *id : std::string(); }
+
+    // Standard base64. Written out rather than pulled in because it is fifteen
+    // lines and the alternative is a dependency for one endpoint.
+    static std::vector<std::uint8_t> decodeBase64(const std::string& text) {
+        static constexpr const char* kAlphabet =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::vector<int> reverse(256, -1);
+        for (int i = 0; i < 64; ++i) reverse[static_cast<unsigned char>(kAlphabet[i])] = i;
+
+        std::vector<std::uint8_t> out;
+        int accumulator = 0;
+        int bits = 0;
+        for (const char c : text) {
+            if (c == '=' ) break;
+            // Whitespace and newlines are common in a JSON-embedded image.
+            if (std::isspace(static_cast<unsigned char>(c))) continue;
+            const int value = reverse[static_cast<unsigned char>(c)];
+            if (value < 0) return {};
+            accumulator = (accumulator << 6) | value;
+            bits += 6;
+            if (bits >= 8) {
+                bits -= 8;
+                out.push_back(static_cast<std::uint8_t>((accumulator >> bits) & 0xFF));
+            }
+        }
+        return out;
+    }
 
     std::unique_ptr<media::AiJobStatus> statusOf(const std::string& jobId) const {
         for (const media::AiJobStatus& status : m_runtime->statuses()) {

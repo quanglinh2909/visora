@@ -71,6 +71,29 @@ oatpp::List<oatpp::Object<AiJobDto>> toDtoList(
     return list;
 }
 
+oatpp::Object<DetectionDto> toDetectionDto(const vision::Detection& detection) {
+    auto dto = DetectionDto::createShared();
+    dto->x1 = detection.x1;
+    dto->y1 = detection.y1;
+    dto->x2 = detection.x2;
+    dto->y2 = detection.y2;
+    dto->score = detection.score;
+    dto->classId = detection.classId;
+    if (!detection.text.empty()) dto->text = detection.text;
+    dto->stage = detection.stage;
+    dto->children = toDetectionDtoList(detection.children);
+    return dto;
+}
+
+oatpp::List<oatpp::Object<DetectionDto>> toDetectionDtoList(
+    const std::vector<vision::Detection>& detections) {
+    auto list = oatpp::List<oatpp::Object<DetectionDto>>::createShared();
+    for (const vision::Detection& detection : detections) {
+        list->push_back(toDetectionDto(detection));
+    }
+    return list;
+}
+
 vision::AiJobChanges toChanges(const oatpp::Object<AiJobDto>& dto) {
     vision::AiJobChanges changes;
     if (!dto) return changes;
