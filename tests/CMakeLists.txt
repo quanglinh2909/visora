@@ -47,3 +47,17 @@ add_executable(pipeline_tests pipeline_tests.cpp)
 target_link_libraries(pipeline_tests PRIVATE visora::media visora::backends)
 target_include_directories(pipeline_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME pipeline_tests COMMAND pipeline_tests)
+
+# Camera business rules, against an in-memory repository. No database.
+add_executable(camera_tests camera_tests.cpp)
+target_link_libraries(camera_tests PRIVATE visora::store)
+target_include_directories(camera_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME camera_tests COMMAND camera_tests)
+
+if(VISORA_WITH_API)
+    # The HTTP adapter: DTO mapping and error translation. No server, no database.
+    add_executable(api_tests api_tests.cpp)
+    target_link_libraries(api_tests PRIVATE visora::api)
+    target_include_directories(api_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME api_tests COMMAND api_tests)
+endif()

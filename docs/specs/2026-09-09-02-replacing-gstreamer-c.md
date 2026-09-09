@@ -77,8 +77,9 @@ RK3588 board.
 | 1 | Foundation: `core`, `hal`, software image path, capability probe | done |
 | 2 | Rockchip backends: RGA image ops, RKNN inference | done, verified on hardware |
 | 3 | **Result contract**: result types, wire format, `ResultSink` registry, Unix-socket sink | **done, verified against the real Python consumer** |
-| 4 | Codec HAL: `CodecProvider`, `ElementSpec`, `PipelineBuilder`; providers for rockchip / nvidia / intel / v4l2 / software | next |
-| 5 | Camera ingest: RTSP source, session lifecycle, state websocket, camera REST + DB | |
+| 4 | Codec HAL: `CodecProvider`, `ElementSpec`, `LaunchPipeline`; providers for rockchip / nvidia / intel / v4l2 / software; camera restream pipeline | done, verified on hardware |
+| 5a | Camera domain, repository port, service, in-memory + PostgreSQL adapters, camera REST, config, server | done |
+| 5b | RTSP source, session lifecycle, state websocket | next |
 | 6 | Recording and playback: segments, motion triggering, HLS, range requests, playback sessions | |
 | 7 | WebRTC and MoQ restream | |
 | 8 | Vision: model catalog, stages, transforms, AI job pipeline, ONNX Runtime backend | |

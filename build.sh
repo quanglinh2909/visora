@@ -9,6 +9,7 @@
 # Environment:
 #   BUILD_TYPE   Debug | RelWithDebInfo | Release   (default: RelWithDebInfo)
 #   JOBS         parallel jobs                      (default: nproc)
+#   VCPKG_ROOT   vcpkg checkout (auto-detected)     — needed only for the HTTP API
 
 set -euo pipefail
 
@@ -30,11 +31,30 @@ for tool in cmake pkg-config c++; do
 done
 if (( ${#missing[@]} > 0 )); then
     echo "missing build tools: ${missing[*]}" >&2
-    echo "  sudo apt-get install -y build-essential cmake pkg-config libopencv-dev" >&2
+    echo "  sudo apt-get install -y build-essential cmake pkg-config libopencv-dev \\" >&2
+    echo "      libgstreamer1.0-dev" >&2
     exit 1
 fi
 
-cmake -B "$BUILD_DIR" -S "$ROOT" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+# vcpkg supplies oatpp for the HTTP API. Without it the lower layers still
+# build; the configure summary says so rather than failing.
+if [[ -z "${VCPKG_ROOT:-}" ]]; then
+    for candidate in "$HOME/vcpkg" "$HOME/.vcpkg" /opt/vcpkg /usr/local/vcpkg; do
+        if [[ -f "$candidate/scripts/buildsystems/vcpkg.cmake" ]]; then
+            VCPKG_ROOT="$candidate"
+            break
+        fi
+    done
+fi
+
+cmake_args=(-B "$BUILD_DIR" -S "$ROOT" -DCMAKE_BUILD_TYPE="$BUILD_TYPE")
+if [[ -n "${VCPKG_ROOT:-}" && -f "$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" ]]; then
+    cmake_args+=(-DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake")
+else
+    echo ">> vcpkg not found; building without the HTTP API layer" >&2
+fi
+
+cmake "${cmake_args[@]}"
 cmake --build "$BUILD_DIR" -j "$JOBS"
 
 case "$MODE" in

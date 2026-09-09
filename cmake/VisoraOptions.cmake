@@ -34,6 +34,23 @@ endif()
 
 option(VISORA_WITH_ROCKCHIP "Rockchip RGA + RKNN backends" ${_visora_rockchip_default})
 
+# --- oatpp: the HTTP API and persistence layers -------------------------------
+# Comes from vcpkg. Auto-detected like everything else, so a contributor working
+# on pixels or pipelines builds the lower layers without it.
+find_package(oatpp 1.3.0 CONFIG QUIET)
+find_package(oatpp-postgresql 1.3.0 CONFIG QUIET)
+find_package(oatpp-swagger 1.3.0 CONFIG QUIET)
+find_package(oatpp-websocket 1.3.0 CONFIG QUIET)
+
+if(oatpp_FOUND AND oatpp-postgresql_FOUND)
+    set(_visora_api_default ON)
+else()
+    set(_visora_api_default OFF)
+endif()
+
+option(VISORA_WITH_API "HTTP API and PostgreSQL persistence (needs vcpkg/oatpp)"
+       ${_visora_api_default})
+
 # --- summary ------------------------------------------------------------------
 # Collected as we go, printed once at the end of the top-level CMakeLists so the
 # table is the last thing a developer sees after configuring.
@@ -64,6 +81,14 @@ function(visora_print_summary)
 endfunction()
 
 visora_summary("OpenCV" "YES" "${OPENCV_VERSION}")
+
+if(VISORA_WITH_API)
+    visora_summary("HTTP API" "YES" "oatpp ${oatpp_VERSION}")
+elseif(NOT oatpp_FOUND)
+    visora_summary("HTTP API" "NO " "oatpp not found - configure with the vcpkg toolchain")
+else()
+    visora_summary("HTTP API" "NO " "disabled by VISORA_WITH_API=OFF")
+endif()
 
 if(VISORA_WITH_ROCKCHIP)
     visora_summary("Rockchip RGA" "YES" "${VISORA_RGA_LIB}")
