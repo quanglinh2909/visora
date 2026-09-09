@@ -18,8 +18,10 @@
 #include <string>
 #include <vector>
 
+#include "media/gst/ElementAvailability.hpp"
 #include "media/pipeline/CameraPipelines.hpp"
 #include "media/stream/RetryPolicy.hpp"
+#include "media/stream/SnapshotGrabber.hpp"
 
 using namespace visora::media;
 
@@ -263,6 +265,65 @@ VS_TEST(a_ceiling_below_the_first_delay_is_honoured) {
     policy.initialMs = 5000;
     policy.maxMs = 1000;
     VS_CHECK_EQ(policy.delayFor(0), 1000u);
+}
+
+// --- snapshot ----------------------------------------------------------------
+
+VS_TEST(the_snapshot_pipeline_is_unwrapped_and_parses) {
+    setElementProbe(nullptr);  // ask the real GStreamer registry
+    SnapshotOptions options;
+    const std::string launch = snapshotLaunch("rtsp://cam/1", options);
+    if (launch.empty()) {
+        // No JPEG encoder installed anywhere. Reporting that is the correct
+        // behaviour, and there is nothing further to assert here.
+        std::fprintf(stderr, "    (no JPEG encoder on this machine; skipped)\n");
+        return;
+    }
+
+    // NOT parenthesised. gst_parse_launch returns a GstBin rather than a
+    // GstPipeline for a wrapped description, and set_state on that goes
+    // nowhere — the failure appears much later, as a timeout.
+    VS_CHECK(launch.front() != '(');
+
+    GError* error = nullptr;
+    GstElement* pipeline = gst_parse_launch(launch.c_str(), &error);
+    if (error) {
+        ::visora::test::reportFailure(__FILE__, __LINE__, error->message);
+        g_error_free(error);
+    }
+    VS_CHECK(pipeline != nullptr);
+    if (pipeline) {
+        VS_CHECK(GST_IS_PIPELINE(pipeline));
+        gst_object_unref(pipeline);
+    }
+}
+
+VS_TEST(the_snapshot_latency_floor_is_applied) {
+    setElementProbe([](const std::string&) { return true; });
+    SnapshotOptions options;
+    options.latencyMs = 200;  // below the floor: a burst-delivered IDR is
+                              // truncated at this value and decodes green
+    const std::string launch = snapshotLaunch("rtsp://cam/1", options);
+    VS_CHECK(launch.find("latency=" + std::to_string(kSnapshotMinimumLatencyMs)) !=
+             std::string::npos);
+
+    options.latencyMs = 2000;  // above it: honoured as asked
+    VS_CHECK(snapshotLaunch("rtsp://cam/1", options).find("latency=2000") !=
+             std::string::npos);
+    setElementProbe(nullptr);
+}
+
+VS_TEST(the_snapshot_sink_pulls_one_frame_at_a_time) {
+    setElementProbe([](const std::string&) { return true; });
+    const std::string launch = snapshotLaunch("rtsp://cam/1", SnapshotOptions{});
+    // Warm-up counts frames rather than sleeping, which only works because each
+    // pull advances the decoder exactly one frame.
+    VS_CHECK(launch.find("max-buffers=1") != std::string::npos);
+    VS_CHECK(launch.find("drop=false") != std::string::npos);
+    // drop-on-latency must never appear: dropping the tail of a keyframe burst
+    // is what turns a 1080p H.265 snapshot green.
+    VS_CHECK(launch.find("drop-on-latency") == std::string::npos);
+    setElementProbe(nullptr);
 }
 
 VS_MAIN()

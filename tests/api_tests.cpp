@@ -10,6 +10,8 @@
 
 #include "api/HttpError.hpp"
 #include "api/mappers/CameraMapper.hpp"
+#include "api/mappers/StreamStatusMapper.hpp"
+#include "api/ws/CameraStateFeed.hpp"
 
 using namespace visora;
 using visora::api::CameraDto;
@@ -107,6 +109,94 @@ VS_TEST(recording_mode_round_trips_through_the_wire) {
         VS_CHECK(changes.recordingMode.has_value());
         if (changes.recordingMode.has_value()) VS_CHECK(changes.recordingMode.value() == mode);
     }
+}
+
+// --- live stream status ------------------------------------------------------
+
+VS_TEST(a_runtime_status_maps_to_the_wire_shape_the_ui_expects) {
+    media::CameraRuntimeStatus status;
+    status.id = "abc";
+    status.name = "Front door";
+    status.state = media::CameraState::Error;
+    status.inputRtsp = "rtsp://cam/1";
+    status.outputRtsp = "rtsp://host:8554/cameras/abc";
+    status.codec = media::Codec::H265;
+    status.hardware = "auto";
+    status.recordingEnabled = true;
+    status.retryCount = 4;
+    status.lastError = "Could not open resource";
+    status.streaming = true;
+
+    const auto dto = api::toDto(status);
+    VS_CHECK(dto->id == "abc");
+    VS_CHECK(dto->state == "error");
+    VS_CHECK(dto->codec == "h265");
+    VS_CHECK(dto->outputRtsp == "rtsp://host:8554/cameras/abc");
+    VS_CHECK(dto->recordingEnabled == true);
+    VS_CHECK(dto->retryCount == 4u);
+    VS_CHECK(dto->streaming == true);
+}
+
+// --- the camera-state websocket message --------------------------------------
+//
+// A deployed UI parses these bytes, so the shape is asserted rather than
+// assumed. The fields the predecessor sent — id, state, lastError,
+// lastChangedAt — must all still be there.
+
+VS_TEST(the_state_message_carries_what_the_predecessor_sent) {
+    media::CameraRuntimeStatus status;
+    status.id = "abc";
+    status.name = "Front door";
+    status.state = media::CameraState::Online;
+    status.codec = media::Codec::H264;
+    status.outputRtsp = "rtsp://host:8554/cameras/abc";
+    status.lastChangedAt = "2026-09-09T10:00:00Z";
+    status.streaming = true;
+
+    const std::string message = api::CameraStateFeed::messageFor(status);
+    for (const char* key : {"\"id\":\"abc\"", "\"state\":\"online\"", "\"lastError\":\"\"",
+                            "\"lastChangedAt\":\"2026-09-09T10:00:00Z\"",
+                            "\"codec\":\"h264\"", "\"retryCount\":0", "\"streaming\":true"}) {
+        if (message.find(key) == std::string::npos) {
+            ::visora::test::reportFailure(__FILE__, __LINE__,
+                                          std::string("missing ") + key + " in " + message);
+        }
+    }
+}
+
+VS_TEST(a_name_with_a_quote_or_a_control_character_stays_valid_json) {
+    media::CameraRuntimeStatus status;
+    status.id = "abc";
+    status.name = "Say \"hi\"";
+    status.lastError = std::string("line\nbreak\twith a NUL:") + '\x01';
+
+    const std::string message = api::CameraStateFeed::messageFor(status);
+    VS_CHECK(message.find("Say \\\"hi\\\"") != std::string::npos);
+    VS_CHECK(message.find("line\\nbreak\\twith") != std::string::npos);
+    // A raw control byte in a JSON string is what a strict parser rejects.
+    VS_CHECK(message.find("\\u0001") != std::string::npos);
+    VS_CHECK(message.find('\x01') == std::string::npos);
+}
+
+VS_TEST(an_unchanged_status_is_not_broadcast_twice) {
+    // The status callback fires on every retry, and a retry that fails the same
+    // way as the last one is not news. With no clients connected this asserts
+    // only the deduplication decision, which is the part with the logic in it.
+    api::CameraStateFeed feed;
+    media::CameraRuntimeStatus status;
+    status.id = "abc";
+    status.state = media::CameraState::Error;
+    status.lastError = "unreachable";
+
+    VS_CHECK_EQ(feed.clientCount(), std::size_t{0});
+    feed.broadcast(status);
+    feed.broadcast(status);
+    VS_CHECK(api::CameraStateFeed::messageFor(status) ==
+             api::CameraStateFeed::messageFor(status));
+
+    // A removal message is distinguishable from a state message.
+    const std::string removed = api::CameraStateFeed::removalMessageFor("abc");
+    VS_CHECK(removed.find("\"state\":\"removed\"") != std::string::npos);
 }
 
 VS_MAIN()

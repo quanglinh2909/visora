@@ -254,9 +254,12 @@ VS_TEST(runtime_updates_do_not_touch_operator_edited_fields) {
     if (!created.ok()) return;
     const std::string id = created.value().id;
 
-    VS_CHECK(service.reportRuntime(id, CameraState::Online, media::Codec::H265,
-                                   "rtsp://host:8554/cameras/x", 3, "")
-                 .ok());
+    media::CameraRuntimeFields fields;
+    fields.state = CameraState::Online;
+    fields.codec = media::Codec::H265;
+    fields.outputRtsp = "rtsp://host:8554/cameras/x";
+    fields.retryCount = 3;
+    VS_CHECK(service.reportRuntime(id, fields).ok());
 
     auto got = service.get(id);
     VS_CHECK(got.ok());
@@ -285,6 +288,38 @@ VS_TEST(recording_mode_parsing_accepts_what_the_database_holds) {
     VS_CHECK(media::recordingModeFromString("always") == RecordingMode::Continuous);
     VS_CHECK(media::recordingModeFromString("off") == RecordingMode::Off);
     VS_CHECK(media::recordingModeFromString("") == RecordingMode::Off);
+}
+
+VS_TEST(runtime_state_is_stamped_by_the_service_not_by_the_adapter) {
+    Fixture fixture;
+    CameraService service = fixture.makeService();
+    auto created = service.create(validCreate());
+    VS_CHECK(created.ok());
+    if (!created.ok()) return;
+    const std::string id = created.value().id;
+
+    media::CameraRuntimeFields fields;
+    fields.state = CameraState::Online;
+    fields.codec = media::Codec::H264;
+    fields.outputRtsp = "rtsp://host:8554/cameras/" + id;
+    VS_CHECK(service.reportRuntime(id, fields).ok());
+
+    auto stored = service.get(id);
+    VS_CHECK(stored.ok());
+    VS_CHECK(stored.value().state == CameraState::Online);
+    // The Postgres adapter used to invent this with now() and the in-memory one
+    // left it empty, so the same operation was observably different depending
+    // on where the row happened to live.
+    const std::string& stamp = stored.value().lastChangedAt;
+    VS_CHECK_EQ(stamp.size(), std::size_t{20});   // 2026-09-09T12:59:07Z
+    VS_CHECK(!stamp.empty() && stamp.back() == 'Z');
+    VS_CHECK(stamp.find('T') == 10);
+
+    // A caller that already has a timestamp keeps it, so the value stored and
+    // the value pushed over the websocket are the same instant.
+    fields.lastChangedAt = "2020-01-01T00:00:00Z";
+    VS_CHECK(service.reportRuntime(id, fields).ok());
+    VS_CHECK(service.get(id).value().lastChangedAt == "2020-01-01T00:00:00Z");
 }
 
 VS_MAIN()

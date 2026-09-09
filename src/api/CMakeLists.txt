@@ -7,6 +7,8 @@ add_library(visora_api STATIC
     Config.cpp
     HttpError.cpp
     mappers/CameraMapper.cpp
+    mappers/StreamStatusMapper.cpp
+    ws/CameraStateFeed.cpp
 )
 add_library(visora::api ALIAS visora_api)
 

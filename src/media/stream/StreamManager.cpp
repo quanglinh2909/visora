@@ -61,11 +61,12 @@ void StreamManager::apply(const Camera& camera) {
                                  session.publishedHardware != camera.hardware;
         session.camera = camera;
         if (sourceMoved) {
-            if (session.published) {
-                m_server->unpublish(mountPath(camera.id));
-                session.published = false;
-            }
+            teardown(camera.id, session);
             session.status = StreamStatus{};
+            // Pointing a camera at a new source re-arms it. Someone who edits
+            // the URL of a stopped camera is fixing it, not asking for it to
+            // stay dark until they also press start.
+            session.desired = true;
             session.nextAttempt = std::chrono::steady_clock::time_point{};
         }
     }
@@ -86,8 +87,79 @@ void StreamManager::remove(const std::string& cameraId) {
 std::map<std::string, StreamStatus> StreamManager::statuses() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::map<std::string, StreamStatus> out;
-    for (const auto& [id, session] : m_sessions) out[id] = session.status;
+    for (const auto& [id, session] : m_sessions) {
+        out[id] = session.status;
+        out[id].desired = session.desired;
+    }
     return out;
+}
+
+std::optional<StreamStatus> StreamManager::statusOf(const std::string& cameraId) const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto it = m_sessions.find(cameraId);
+    if (it == m_sessions.end()) return std::nullopt;
+    StreamStatus status = it->second.status;
+    status.desired = it->second.desired;
+    return status;
+}
+
+void StreamManager::startStream(const std::string& cameraId) {
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto it = m_sessions.find(cameraId);
+        if (it == m_sessions.end()) return;
+        Session& session = it->second;
+        if (session.desired) return;  // already wanted; nothing to do
+        session.desired = true;
+        // A camera stopped by hand and started again should try immediately,
+        // not inherit the backoff it had accumulated before it was stopped.
+        session.status = StreamStatus{};
+        session.nextAttempt = std::chrono::steady_clock::time_point{};
+    }
+    m_wake.notify_all();
+}
+
+void StreamManager::stopStream(const std::string& cameraId) {
+    StreamStatus stopped;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto it = m_sessions.find(cameraId);
+        if (it == m_sessions.end()) return;
+        Session& session = it->second;
+        const bool wasDesired = session.desired;
+        session.desired = false;
+        teardown(cameraId, session);
+        session.status = StreamStatus{};
+        session.status.desired = false;
+        // Far in the future: the worker must not quietly bring back a stream an
+        // operator stopped. startStream() is what re-arms it.
+        session.nextAttempt = std::chrono::steady_clock::time_point::max();
+        if (!wasDesired) return;
+        stopped = session.status;
+    }
+    m_wake.notify_all();
+    report(cameraId, stopped);
+}
+
+void StreamManager::restartStream(const std::string& cameraId) {
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto it = m_sessions.find(cameraId);
+        if (it == m_sessions.end()) return;
+        Session& session = it->second;
+        session.desired = true;
+        teardown(cameraId, session);
+        session.status = StreamStatus{};
+        session.nextAttempt = std::chrono::steady_clock::time_point{};
+    }
+    m_wake.notify_all();
+}
+
+void StreamManager::teardown(const std::string& cameraId, Session& session) {
+    if (session.published) m_server->unpublish(mountPath(cameraId));
+    session.published = false;
+    session.publishedSource.clear();
+    session.publishedHardware.clear();
 }
 
 void StreamManager::workerLoop() {
@@ -130,7 +202,7 @@ void StreamManager::workerLoop() {
 bool StreamManager::advance(Session& session) {
     const Camera& camera = session.camera;
 
-    if (!wantsStreaming(camera)) {
+    if (!session.desired || !wantsStreaming(camera)) {
         if (session.status.state == CameraState::Offline && session.status.lastError.empty()) {
             return false;
         }

@@ -49,7 +49,9 @@ Details that are part of the contract and easy to lose:
 
 ### 2. The REST API — 49 endpoints
 
-To be reproduced as-is. Grouped by resource:
+To be reproduced as-is. Grouped by resource. `/cameras/{id}/thumbnail` is listed
+under Cameras but belongs to step 6: it extracts a frame from a RECORDED
+segment, not from the live stream, so it cannot exist before recording does.
 
 | Group | Endpoints |
 |---|---|
@@ -80,8 +82,8 @@ RK3588 board.
 | 4 | Codec HAL: `CodecProvider`, `ElementSpec`, `LaunchPipeline`; providers for rockchip / nvidia / intel / v4l2 / software; camera restream pipeline | done, verified on hardware |
 | 5a | Camera domain, repository port, service, in-memory + PostgreSQL adapters, camera REST, config, server | done |
 | 5b | RTSP restream runtime: shared server, codec probe, retry with backoff, status reported back | done |
-| 5c | Camera state websocket, stream start/stop/restart endpoints, snapshot, thumbnail | next |
-| 6 | Recording and playback: segments, motion triggering, HLS, range requests, playback sessions | |
+| 5c | Camera state websocket, stream start/stop/restart endpoints, snapshot | done |
+| 6 | Recording and playback: segments, motion triggering, HLS, range requests, playback sessions, thumbnail | next |
 | 7 | WebRTC and MoQ restream | |
 | 8 | Vision: model catalog, stages, transforms, AI job pipeline, ONNX Runtime backend | |
 | 9 | Cutover: run both against the same cameras and database, compare, then retire `gstreamer_c` | |
@@ -98,6 +100,10 @@ Runnable today, on x86_64 and on RK3588:
 - `visora` serves the camera REST API with Swagger UI, keeps every camera
   restreaming over RTSP, probes each one's codec, retries unreachable cameras
   with exponential backoff, and writes runtime state back to the row.
+- Live stream status is readable (`GET /camera-streams`,
+  `GET /cameras/{id}/stream`), controllable (`POST .../stream/{start,stop,restart}`),
+  pushed as it changes (`GET /ws/camera-state`), and a camera can be
+  photographed on demand (`GET /cameras/{id}/snapshot`).
 - Results published to `/tmp/ai_engine.sock` are byte-compatible with
   `gstreamer_ai_python`, verified against the real consumer — though nothing
   produces real results until step 8.

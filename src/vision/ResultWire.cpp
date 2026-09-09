@@ -5,22 +5,13 @@
 #include <ios>
 #include <sstream>
 
+#include "core/Json.hpp"
+
 namespace visora::vision::wire {
 namespace {
 
 void escape(std::ostringstream& out, const std::string& text) {
-    out << '"';
-    for (const char c : text) {
-        switch (c) {
-            case '"':  out << "\\\""; break;
-            case '\\': out << "\\\\"; break;
-            case '\n': out << "\\n";  break;
-            case '\r': out << "\\r";  break;
-            case '\t': out << "\\t";  break;
-            default:   out << c;      break;
-        }
-    }
-    out << '"';
+    out << core::jsonString(text);
 }
 
 void writeFloatArray(std::ostringstream& out, const std::vector<float>& values) {

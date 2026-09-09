@@ -54,6 +54,14 @@ target_link_libraries(camera_tests PRIVATE visora::store)
 target_include_directories(camera_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME camera_tests COMMAND camera_tests)
 
+# The live-stream runtime: the join of a camera row to its running pipeline.
+# StreamControl and SnapshotGrabber are ports, so this needs no RTSP server and
+# no camera on the network.
+add_executable(runtime_tests runtime_tests.cpp)
+target_link_libraries(runtime_tests PRIVATE visora::store visora::backends)
+target_include_directories(runtime_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME runtime_tests COMMAND runtime_tests)
+
 if(VISORA_WITH_API)
     # The HTTP adapter: DTO mapping and error translation. No server, no database.
     add_executable(api_tests api_tests.cpp)

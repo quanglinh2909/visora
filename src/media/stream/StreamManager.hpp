@@ -16,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -23,6 +24,7 @@
 #include "media/camera/Camera.hpp"
 #include "media/stream/RetryPolicy.hpp"
 #include "media/stream/RtspServer.hpp"
+#include "media/stream/StreamControl.hpp"
 
 namespace visora::media {
 
@@ -33,21 +35,11 @@ struct StreamManagerConfig {
     RetryPolicy retry;
 };
 
-// How a camera's stream is doing, reported back so the row in the database and
-// the websocket both reflect reality.
-struct StreamStatus {
-    CameraState state = CameraState::Offline;
-    Codec codec = Codec::Unknown;
-    std::string outputRtsp;
-    int retryCount = 0;
-    std::string lastError;
-};
-
-class StreamManager {
+class StreamManager : public StreamControl {
 public:
     StreamManager(StreamManagerConfig config, std::shared_ptr<RtspServer> server,
                   std::function<void(const std::string& cameraId, const StreamStatus&)> onStatus);
-    ~StreamManager();
+    ~StreamManager() override;
 
     StreamManager(const StreamManager&) = delete;
     StreamManager& operator=(const StreamManager&) = delete;
@@ -62,13 +54,25 @@ public:
 
     void remove(const std::string& cameraId);
 
+    // --- StreamControl -------------------------------------------------------
+
     // Everything currently managed, for the REST status endpoint.
-    std::map<std::string, StreamStatus> statuses() const;
+    std::map<std::string, StreamStatus> statuses() const override;
+    std::optional<StreamStatus> statusOf(const std::string& cameraId) const override;
+
+    void startStream(const std::string& cameraId) override;
+    void stopStream(const std::string& cameraId) override;
+    void restartStream(const std::string& cameraId) override;
 
 private:
     struct Session {
         Camera camera;
         StreamStatus status;
+        // Whether an operator wants this camera streaming. Separate from
+        // whether it IS streaming: a camera stopped by hand must stay stopped
+        // across the retry loop, and "offline because it was stopped" is a
+        // different thing from "offline because the camera is unreachable".
+        bool desired = true;
         // When to try again. Zero means "as soon as possible".
         std::chrono::steady_clock::time_point nextAttempt{};
         bool published = false;
@@ -82,6 +86,8 @@ private:
     bool advance(Session& session);
     void publishSession(Session& session);
     void report(const std::string& cameraId, const StreamStatus& status);
+    // Drops the mount and clears what was published. Caller holds the lock.
+    void teardown(const std::string& cameraId, Session& session);
 
     StreamManagerConfig m_config;
     std::shared_ptr<RtspServer> m_server;

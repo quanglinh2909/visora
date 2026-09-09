@@ -18,9 +18,11 @@ add_library(visora_media STATIC
     gst/LaunchPipeline.cpp
     pipeline/CameraPipelines.cpp
     camera/Camera.cpp
+    camera/CameraRuntime.cpp
     camera/CameraService.cpp
     stream/CodecProbe.cpp
     stream/RtspServer.cpp
+    stream/SnapshotGrabber.cpp
     stream/StreamManager.cpp
     stream/RetryPolicy.cpp
 )

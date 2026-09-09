@@ -25,9 +25,8 @@ public:
     core::Result<media::Camera> insert(const media::Camera& camera) override;
     core::Result<media::Camera> update(const media::Camera& camera) override;
     core::Status remove(const std::string& id) override;
-    core::Status updateRuntime(const std::string& id, media::CameraState state,
-                               media::Codec codec, const std::string& outputRtsp,
-                               int retryCount, const std::string& lastError) override;
+    core::Status updateRuntime(const std::string& id,
+                               const media::CameraRuntimeFields& fields) override;
 
 private:
     mutable std::mutex m_mutex;

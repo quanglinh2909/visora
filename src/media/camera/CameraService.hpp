@@ -46,9 +46,8 @@ public:
     core::Status remove(const std::string& id);
 
     // Called by the streaming layer as a pipeline connects, fails or retries.
-    core::Status reportRuntime(const std::string& id, CameraState state, Codec codec,
-                               const std::string& outputRtsp, int retryCount,
-                               const std::string& lastError);
+    // `lastChangedAt` is stamped here, so every adapter stores the same value.
+    core::Status reportRuntime(const std::string& id, CameraRuntimeFields fields);
 
 private:
     std::shared_ptr<CameraRepository> m_repository;

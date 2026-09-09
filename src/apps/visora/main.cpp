@@ -17,16 +17,23 @@
 
 #include "api/Config.hpp"
 #include "api/controllers/CameraController.hpp"
+#include "api/controllers/CameraStreamController.hpp"
+#include "api/controllers/WebSocketController.hpp"
+#include "api/ws/CameraStateFeed.hpp"
 #include "core/Log.hpp"
+#include "core/Time.hpp"
 #include "hal/Capabilities.hpp"
+#include "media/camera/CameraRuntime.hpp"
 #include "media/camera/CameraService.hpp"
 #include "media/gst/CodecProvider.hpp"
 #include "media/stream/RtspServer.hpp"
+#include "media/stream/SnapshotGrabber.hpp"
 #include "media/stream/StreamManager.hpp"
 #include "store/InMemoryCameraRepository.hpp"
 #include "store/PostgresCameraRepository.hpp"
 
 #include "oatpp-swagger/Controller.hpp"
+#include "oatpp-websocket/ConnectionHandler.hpp"
 #include "oatpp-swagger/Model.hpp"
 #include "oatpp-swagger/Resources.hpp"
 #include "oatpp/network/Server.hpp"
@@ -131,22 +138,51 @@ int main(int argc, char** argv) {
         streamConfig.retry.initialMs = config.value().stream.retryInitialMs;
         streamConfig.retry.maxMs = config.value().stream.retryMaxMs;
 
+        // Connected browsers, told about every state change as it happens.
+        // Built before the stream manager because the manager's status callback
+        // pushes into it.
+        auto cameraStateFeed = std::make_shared<api::CameraStateFeed>();
+
         // The service is captured weakly on purpose: the manager's worker
         // thread outlives nothing here, but a strong reference would make the
         // two own each other and neither would ever be destroyed.
         std::weak_ptr<media::CameraService> cameraServiceWeak;
         auto streams = std::make_shared<media::StreamManager>(
             streamConfig, rtspServer,
-            [&cameraServiceWeak](const std::string& cameraId,
-                                 const media::StreamStatus& status) {
+            [&cameraServiceWeak, cameraStateFeed](const std::string& cameraId,
+                                                  const media::StreamStatus& status) {
+                media::CameraRuntimeFields fields;
+                fields.state = status.state;
+                fields.codec = status.codec;
+                fields.outputRtsp = status.outputRtsp;
+                fields.retryCount = status.retryCount;
+                fields.lastError = status.lastError;
+                fields.lastChangedAt = core::nowIso8601();
+
+                std::string name;
                 if (auto service = cameraServiceWeak.lock()) {
                     // Runtime state goes back to the row, so a restart resumes
                     // with what was true rather than with 'offline' for every
                     // camera.
-                    service->reportRuntime(cameraId, status.state, status.codec,
-                                           status.outputRtsp, status.retryCount,
-                                           status.lastError);
+                    service->reportRuntime(cameraId, fields);
+                    if (auto camera = service->get(cameraId)) name = camera.value().name;
                 }
+
+                // The push happens after the write, so a client that reacts by
+                // fetching the camera sees the state it was just told about —
+                // and carries the same timestamp that was stored, rather than a
+                // second one taken a moment later.
+                media::CameraRuntimeStatus push;
+                push.id = cameraId;
+                push.name = std::move(name);
+                push.state = fields.state;
+                push.codec = fields.codec;
+                push.outputRtsp = fields.outputRtsp;
+                push.retryCount = fields.retryCount;
+                push.lastError = fields.lastError;
+                push.lastChangedAt = fields.lastChangedAt;
+                push.streaming = status.desired;
+                cameraStateFeed->broadcast(push);
             });
 
         // Events are callbacks so the dependency points one way: the camera
@@ -159,10 +195,18 @@ int main(int argc, char** argv) {
             // rename never drops a viewer.
             if (diff.sourceChanged || diff.recordingChanged) streams->apply(camera);
         };
-        events.removed = [streams](const std::string& id) { streams->remove(id); };
+        events.removed = [streams, cameraStateFeed](const std::string& id) {
+            streams->remove(id);
+            cameraStateFeed->broadcastRemoved(id);
+        };
 
         auto cameras = std::make_shared<media::CameraService>(repository, std::move(events));
         cameraServiceWeak = cameras;
+
+        media::SnapshotOptions snapshotOptions;
+        snapshotOptions.latencyMs = config.value().stream.sourceLatencyMs;
+        auto runtime = std::make_shared<media::CameraRuntime>(
+            cameras, streams, media::makeGstSnapshotGrabber(), snapshotOptions);
 
         streams->start();
 
@@ -181,6 +225,15 @@ int main(int argc, char** argv) {
         auto router = oatpp::web::server::HttpRouter::createShared();
         auto cameraController = api::CameraController::createShared(objectMapper, cameras);
         router->addController(cameraController);
+        auto streamController =
+            api::CameraStreamController::createShared(objectMapper, runtime);
+        router->addController(streamController);
+
+        auto cameraStateHandler = oatpp::websocket::ConnectionHandler::createShared();
+        cameraStateHandler->setSocketInstanceListener(
+            std::make_shared<api::CameraStateInstanceListener>(cameraStateFeed));
+        router->addController(
+            api::WebSocketController::createShared(objectMapper, cameraStateHandler));
 
         auto documentInfo =
             oatpp::swagger::DocumentInfo::Builder()
@@ -190,6 +243,10 @@ int main(int argc, char** argv) {
                 .build();
         oatpp::web::server::api::Endpoints endpoints;
         endpoints.append(cameraController->getEndpoints());
+        endpoints.append(streamController->getEndpoints());
+        // The websocket controller is deliberately absent: OpenAPI cannot
+        // describe an upgrade handshake, and listing it as a GET that returns
+        // 101 misleads whoever reads the docs.
 
         // createShared takes documentInfo and resources as OATPP_COMPONENT
         // DEFAULT arguments, which means they can simply be passed. Doing so
@@ -222,6 +279,9 @@ int main(int argc, char** argv) {
         VS_INFO(kCategory) << "shutting down";
         g_server.reset();
         connectionHandler->stop();
+        // Websocket connections are held by their own handler and would keep
+        // the process alive after the HTTP server stopped.
+        cameraStateHandler->stop();
         // Streams first: their worker touches the camera service, which the
         // repository outlives only until this scope ends.
         streams->stop();

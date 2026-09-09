@@ -17,6 +17,22 @@
 
 namespace visora::media {
 
+// The fields the streaming layer owns. A struct rather than six positional
+// parameters: they are written together, and a caller that swaps two strings of
+// the same type gets a compile error here instead of a wrong row.
+struct CameraRuntimeFields {
+    CameraState state = CameraState::Offline;
+    Codec codec = Codec::Unknown;
+    std::string outputRtsp;
+    int retryCount = 0;
+    std::string lastError;
+    // When this last changed, ISO-8601 UTC. Stamped by the service, not by the
+    // adapter: the Postgres adapter used to invent it with now() and the
+    // in-memory one left it empty, so the same operation was observably
+    // different depending on where the data happened to live.
+    std::string lastChangedAt;
+};
+
 class CameraRepository {
 public:
     virtual ~CameraRepository() = default;
@@ -36,9 +52,8 @@ public:
 
     // Runtime fields only. Separated from update() because they change on every
     // reconnect and must not collide with an operator editing the same row.
-    virtual core::Status updateRuntime(const std::string& id, CameraState state,
-                                       Codec codec, const std::string& outputRtsp,
-                                       int retryCount, const std::string& lastError) = 0;
+    virtual core::Status updateRuntime(const std::string& id,
+                                       const CameraRuntimeFields& fields) = 0;
 };
 
 }  // namespace visora::media

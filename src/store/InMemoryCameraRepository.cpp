@@ -55,18 +55,16 @@ core::Status InMemoryCameraRepository::remove(const std::string& id) {
 }
 
 core::Status InMemoryCameraRepository::updateRuntime(const std::string& id,
-                                                     media::CameraState state, media::Codec codec,
-                                                     const std::string& outputRtsp,
-                                                     int retryCount,
-                                                     const std::string& lastError) {
+                                                     const media::CameraRuntimeFields& fields) {
     std::lock_guard<std::mutex> lock(m_mutex);
     const auto it = m_cameras.find(id);
     if (it == m_cameras.end()) return core::notFound("no camera with id " + id);
-    it->second.state = state;
-    it->second.codec = codec;
-    it->second.outputRtsp = outputRtsp;
-    it->second.retryCount = retryCount;
-    it->second.lastError = lastError;
+    it->second.state = fields.state;
+    it->second.codec = fields.codec;
+    it->second.outputRtsp = fields.outputRtsp;
+    it->second.retryCount = fields.retryCount;
+    it->second.lastError = fields.lastError;
+    it->second.lastChangedAt = fields.lastChangedAt;
     return {};
 }
 

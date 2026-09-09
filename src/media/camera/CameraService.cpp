@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "core/Log.hpp"
+#include "core/Time.hpp"
 
 namespace visora::media {
 namespace {
@@ -147,10 +148,9 @@ core::Status CameraService::remove(const std::string& id) {
     return {};
 }
 
-core::Status CameraService::reportRuntime(const std::string& id, CameraState state, Codec codec,
-                                          const std::string& outputRtsp, int retryCount,
-                                          const std::string& lastError) {
-    return m_repository->updateRuntime(id, state, codec, outputRtsp, retryCount, lastError);
+core::Status CameraService::reportRuntime(const std::string& id, CameraRuntimeFields fields) {
+    if (fields.lastChangedAt.empty()) fields.lastChangedAt = core::nowIso8601();
+    return m_repository->updateRuntime(id, fields);
 }
 
 }  // namespace visora::media

@@ -237,24 +237,23 @@ core::Status PostgresCameraRepository::remove(const std::string& id) {
 }
 
 core::Status PostgresCameraRepository::updateRuntime(const std::string& id,
-                                                     media::CameraState state,
-                                                     media::Codec codec,
-                                                     const std::string& outputRtsp,
-                                                     int retryCount,
-                                                     const std::string& lastError) {
+                                                     const media::CameraRuntimeFields& fields) {
+    // last_changed_at comes from the caller, not from the database's now().
+    // Two adapters that stamp their own time make the same domain operation
+    // observably different depending on where the row happens to live.
     const auto result = m_impl->run(
         "UPDATE cameras SET state = :state, codec = :codec, output_rtsp = :output_rtsp, "
         "retry_count = :retry_count, last_error = :last_error, "
-        "last_changed_at = to_char(now() AT TIME ZONE 'UTC', "
-        "'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+        "last_changed_at = :last_changed_at "
         "WHERE id = CAST(:id AS UUID)",
         {
             {"id", oatpp::String(id.c_str())},
-            {"state", oatpp::String(media::toString(state))},
-            {"codec", oatpp::String(media::toString(codec))},
-            {"output_rtsp", oatpp::String(outputRtsp.c_str())},
-            {"retry_count", oatpp::Int32(retryCount)},
-            {"last_error", oatpp::String(lastError.c_str())},
+            {"state", oatpp::String(media::toString(fields.state))},
+            {"codec", oatpp::String(media::toString(fields.codec))},
+            {"output_rtsp", oatpp::String(fields.outputRtsp.c_str())},
+            {"retry_count", oatpp::Int32(fields.retryCount)},
+            {"last_error", oatpp::String(fields.lastError.c_str())},
+            {"last_changed_at", oatpp::String(fields.lastChangedAt.c_str())},
         });
     if (!result || !result->isSuccess()) return toError(result);
     return {};

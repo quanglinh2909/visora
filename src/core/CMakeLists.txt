@@ -6,8 +6,10 @@ add_library(visora_core STATIC
     Geometry.cpp
     Image.cpp
     ImageMath.cpp
+    Json.cpp
     Log.cpp
     Result.cpp
+    Time.cpp
 )
 add_library(visora::core ALIAS visora_core)
 
