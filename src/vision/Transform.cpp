@@ -26,9 +26,16 @@ std::vector<Transform*> transforms() {
     return out;
 }
 
+// The transform a stage names, with the empty id meaning "the default".
+//
+// The crop registers under its own name so a client can see it in
+// GET /ai-transforms and refer to it — it used to register as "", which listed
+// an entry no caller could name. An empty id in a stage still resolves here, so
+// a job that omits the field, and every job stored before this, keeps working.
 Transform* transform(std::string_view id) {
+    const std::string_view wanted = id.empty() ? kDefaultTransformId : id;
     for (const auto& item : instances()) {
-        if (item->id() == id) return item.get();
+        if (item->id() == wanted) return item.get();
     }
     return nullptr;
 }

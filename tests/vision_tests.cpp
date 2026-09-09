@@ -127,11 +127,27 @@ VS_TEST(model_types_register_themselves_rather_than_being_listed) {
 }
 
 VS_TEST(the_plain_crop_is_a_registered_transform_not_a_special_case) {
-    // So the runner asks for the transform named "" and gets it, rather than
-    // branching on whether one was configured.
-    VS_CHECK(vision::transform("") != nullptr);
+    // So the runner asks for a transform and gets one, rather than branching on
+    // whether a stage configured it.
     VS_CHECK(!vision::transforms().empty());
     VS_CHECK(vision::transform("no-such-transform") == nullptr);
+}
+
+VS_TEST(the_crop_transform_has_a_name_a_client_can_use) {
+    // It used to register as "", which listed an entry in GET /ai-transforms
+    // that no caller could refer to — found on the board.
+    bool named = false;
+    for (const vision::Transform* item : vision::transforms()) {
+        if (item->id() == "crop") named = true;
+        // Nothing may list itself without a name.
+        VS_CHECK(!item->id().empty());
+    }
+    VS_CHECK(named);
+    VS_CHECK(vision::transform("crop") != nullptr);
+
+    // An empty id still resolves to it, so a stage that omits the field works —
+    // and so does every job stored before the crop had a name.
+    VS_CHECK(vision::transform("") == vision::transform("crop"));
 }
 
 // --- the stage tree ----------------------------------------------------------

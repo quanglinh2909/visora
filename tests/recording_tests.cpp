@@ -526,4 +526,33 @@ VS_TEST(the_recording_pipeline_is_unwrapped_and_parses) {
     VS_CHECK(media::RecordingSession::launchFor("cam", media::Codec::Unknown, options).empty());
 }
 
+VS_TEST(a_seek_never_lands_on_the_segment_being_written) {
+    // The muxer still holds that file open, and at the moment it opens it is
+    // zero bytes. A thumbnail request with no timestamp defaulted to "now",
+    // landed on exactly that, and answered 500 because GStreamer could not
+    // preroll an empty file — found on the board.
+    const std::vector<RecordingSegment> all = {
+        makeSegment("done", 0, 10'000),
+        [] {
+            RecordingSegment open = makeSegment("open", 10'000, 10'000);
+            open.status = SegmentStatus::Recording;
+            return open;
+        }(),
+    };
+
+    // Filtering is what the service does before calling seekTo; assert the
+    // arithmetic it depends on, which is that seeking into the open segment
+    // WOULD otherwise succeed.
+    VS_CHECK(media::seekTo(all, 15'000).found);
+
+    std::vector<RecordingSegment> complete;
+    for (const RecordingSegment& segment : all) {
+        if (segment.status == SegmentStatus::Complete) complete.push_back(segment);
+    }
+    // With it excluded, a seek past everything finished finds nothing rather
+    // than an unopenable file.
+    VS_CHECK(!media::seekTo(complete, 15'000).found);
+    VS_CHECK(media::seekTo(complete, 5'000).found);
+}
+
 VS_MAIN()

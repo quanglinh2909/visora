@@ -13,7 +13,7 @@ namespace {
 
 class CropTransform final : public Transform {
 public:
-    std::string_view id() const override { return ""; }
+    std::string_view id() const override { return "crop"; }
     std::string_view label() const override { return "Crop"; }
     std::string_view description() const override {
         return "Cuts the detection out of the frame and fits it to the model input.";
@@ -84,7 +84,7 @@ private:
 };
 
 const core::Register<Transform> registration({
-    "",
+    "crop",
     /*priority=*/0,
     [] { return core::Probe::yes("crop the detection out of the frame"); },
     [] { return std::unique_ptr<Transform>(new CropTransform()); },

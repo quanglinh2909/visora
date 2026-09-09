@@ -45,18 +45,59 @@ core::Result<std::string> PlaybackService::playlist(const std::string& cameraId,
     return buildVodPlaylist(complete, m_config.playlist);
 }
 
-core::Result<SeekPoint> PlaybackService::seek(const std::string& cameraId, std::int64_t atMs) {
-    auto camera = m_cameras->get(cameraId);
-    if (!camera) return camera.error();
-
+core::Result<std::vector<RecordingSegment>> PlaybackService::completeAround(
+    const std::string& cameraId, std::int64_t atMs) {
     // A day either side. Wide enough that a seek near a gap finds the next
     // recording, bounded so the query does not walk a year of segments.
     constexpr std::int64_t kWindowMs = 24LL * 60 * 60 * 1000;
     auto segments = m_recordings->segmentsInRange(cameraId, atMs - kWindowMs, atMs + kWindowMs);
     if (!segments) return segments.error();
 
+    // COMPLETE only.
+    //
+    // The segment being written right now is a file the muxer still holds open,
+    // and at the moment it opens it is zero bytes. Seeking to "now" landed on
+    // exactly that: a thumbnail request with no timestamp answered 500 because
+    // GStreamer could not preroll an empty file. Nothing can play it either —
+    // the playlist already excludes it — so it has no business being the answer
+    // to a seek.
+    std::vector<RecordingSegment> complete;
+    for (const RecordingSegment& segment : segments.value()) {
+        if (segment.status == SegmentStatus::Complete) complete.push_back(segment);
+    }
+    return complete;
+}
+
+core::Result<SeekPoint> PlaybackService::seek(const std::string& cameraId, std::int64_t atMs) {
+    auto camera = m_cameras->get(cameraId);
+    if (!camera) return camera.error();
+
+    auto segments = completeAround(cameraId, atMs);
+    if (!segments) return segments.error();
+
     SeekPoint point = seekTo(segments.value(), atMs);
     if (!point.found) return core::notFound("nothing was recorded at or after that time");
+    return point;
+}
+
+core::Result<SeekPoint> PlaybackService::latest(const std::string& cameraId) {
+    auto camera = m_cameras->get(cameraId);
+    if (!camera) return camera.error();
+
+    auto segments = completeAround(cameraId, core::nowEpochMs());
+    if (!segments) return segments.error();
+    if (segments.value().empty()) {
+        return core::notFound("nothing has been recorded for this camera");
+    }
+
+    // The most recent FINISHED segment, and a moment inside it rather than at
+    // its very end — the last frames of a file are the ones a decoder is least
+    // able to produce on its own after a seek.
+    const RecordingSegment& newest = segments.value().back();
+    SeekPoint point;
+    point.found = true;
+    point.segment = newest;
+    point.offsetMs = std::max<std::int64_t>(0, newest.durationMs / 2);
     return point;
 }
 
@@ -119,7 +160,10 @@ core::Result<std::vector<std::uint8_t>> PlaybackService::thumbnail(
     const std::string& cameraId, std::int64_t atMs, const ThumbnailOptions& options) {
     if (!m_thumbnails) return core::unsupported("this build cannot extract thumbnails");
 
-    auto point = seek(cameraId, atMs);
+    // atMs <= 0 means "whatever is most recent", which is what a client asking
+    // for a camera's thumbnail with no timestamp wants. Answering it with "now"
+    // seeks past the end of everything finished.
+    auto point = atMs > 0 ? seek(cameraId, atMs) : latest(cameraId);
     if (!point) return point.error();
 
     const RecordingSegment& segment = point.value().segment;

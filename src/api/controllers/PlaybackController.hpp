@@ -126,16 +126,23 @@ public:
     }
 
     ENDPOINT_INFO(getThumbnail) {
-        info->summary = "A preview frame from what was recorded at an instant";
+        info->summary = "A preview frame from what was recorded";
+        info->description =
+            "With no 'at', the most recent FINISHED recording. Not 'now': the segment "
+            "being written is still open, and at the moment it opens it is empty.";
         info->addResponse<String>(Status::CODE_200, "image/jpeg");
         info->addResponse(Status::CODE_404, "text/plain");
+        info->addResponse(Status::CODE_500, "text/plain");
         info->addResponse(Status::CODE_503, "text/plain");
     }
     ENDPOINT("GET", "/cameras/{id}/thumbnail", getThumbnail, PATH(String, id),
              QUERY(String, at, "at", ""), QUERY(String, width, "width", "320")) {
-        const std::int64_t atMs = at && !at->empty() ? core::parseEpochMs(*at)
-                                                     : core::nowEpochMs();
-        if (atMs < 0) abortWith(core::invalidArgument("'at' is not a timestamp: " + *at));
+        // 0 means "the most recent", which is what no timestamp asks for.
+        std::int64_t atMs = 0;
+        if (at && !at->empty()) {
+            atMs = core::parseEpochMs(*at);
+            if (atMs < 0) abortWith(core::invalidArgument("'at' is not a timestamp: " + *at));
+        }
 
         media::ThumbnailOptions options;
         options.width = static_cast<int>(

@@ -64,11 +64,14 @@ struct TransformContext {
     core::Rect contentRect;
 };
 
+// What a stage gets when it names no transform.
+inline constexpr std::string_view kDefaultTransformId = "crop";
+
 class Transform {
 public:
     virtual ~Transform() = default;
 
-    // The id stored in a job stage. The empty id is the plain crop.
+    // The id stored in a job stage.
     virtual std::string_view id() const = 0;
     virtual std::string_view label() const = 0;
     virtual std::string_view description() const = 0;
@@ -83,6 +86,9 @@ public:
 core::Registry<Transform>& transformRegistry();
 
 std::vector<Transform*> transforms();
+
+// The empty id resolves to the default (the plain crop), so a stage that omits
+// the field works and so does every job stored before the crop had a name.
 Transform* transform(std::string_view id);
 
 }  // namespace visora::vision
