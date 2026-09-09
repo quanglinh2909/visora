@@ -6,6 +6,9 @@
 // written once for every backend. That split is the whole reason this interface
 // is at the tensor level.
 
+#include <glob.h>
+#include <unistd.h>
+
 #include <rknn_api.h>
 
 #include <cerrno>
@@ -263,33 +266,35 @@ public:
 };
 
 Probe probeRknn() {
-    // The library links, but that says nothing about the device: a board with
-    // no NPU node, or a container without it mapped in, must not select this.
-    const char* version = nullptr;
-    rknn_sdk_version sdk{};
-    // rknn_query needs a context, and there is none before a model loads, so
-    // the honest check is whether the NPU device node exists.
-    std::FILE* node = std::fopen("/proc/rknpu/version", "re");
-    if (node == nullptr) node = std::fopen("/sys/kernel/debug/rknpu/version", "re");
-    if (node == nullptr) {
-        // Older BSPs expose neither; fall back to the driver device itself.
-        node = std::fopen("/dev/rknpu", "re");
-        if (node == nullptr) {
-            return Probe::no("no RKNPU device node (/proc/rknpu/version, /dev/rknpu)");
+    // The library linking says nothing about the device: a board with no NPU, or
+    // a container without it mapped in, must not select this backend.
+    //
+    // There is no single portable node. Orange Pi 5 (RK3588, kernel 6.1) exposes
+    // the NPU only as a devfreq device — /proc/rknpu and /dev/rknpu, which older
+    // BSPs use, do not exist there. Checking the wrong one reports "no NPU" on a
+    // board that has one, which is exactly the false negative this probe exists
+    // to avoid, so all the known spellings are tried.
+    glob_t globbed{};
+    std::string devfreq;
+    if (::glob("/sys/class/devfreq/*npu*", 0, nullptr, &globbed) == 0 && globbed.gl_pathc > 0) {
+        devfreq = globbed.gl_pathv[0];
+    }
+    ::globfree(&globbed);
+    if (!devfreq.empty()) {
+        const std::size_t slash = devfreq.find_last_of('/');
+        if (slash != std::string::npos) devfreq.erase(0, slash + 1);
+        return Probe::yes("RKNPU present (devfreq " + devfreq + ")");
+    }
+
+    for (const char* path : {"/proc/rknpu/version", "/sys/kernel/debug/rknpu/version",
+                             "/dev/rknpu"}) {
+        if (::access(path, F_OK) == 0) {
+            return Probe::yes(std::string("RKNPU present (") + path + ")");
         }
     }
-    char line[128] = {0};
-    version = std::fgets(line, sizeof(line), node);
-    std::fclose(node);
 
-    std::string detail = "RKNPU present";
-    if (version != nullptr) {
-        std::string text(line);
-        while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
-        if (!text.empty()) detail += ", driver " + text;
-    }
-    (void)sdk;
-    return Probe::yes(detail);
+    return Probe::no("no RKNPU device found (looked for /sys/class/devfreq/*npu*, "
+                     "/proc/rknpu/version, /dev/rknpu)");
 }
 
 const Register<InferenceBackend> registration{{

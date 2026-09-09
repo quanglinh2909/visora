@@ -86,26 +86,39 @@ bool toRgaFormat(PixelFormat format, int* out) {
     return false;
 }
 
+// RGA counts a buffer's width stride in PIXELS; core::ImageView counts it in
+// BYTES. For RGB888 that is a factor of three, and getting it wrong describes a
+// 320-pixel-wide image to the driver as 960 pixels wide — it then reads far past
+// the end of the buffer. This produced wrong colours under test and a segfault
+// standalone, and no amount of x86 testing could have caught it.
+int pixelStride(PixelFormat format, int byteStride, int fallbackWidth) {
+    if (byteStride <= 0) return fallbackWidth;
+    switch (format) {
+        case PixelFormat::RGB888:
+        case PixelFormat::BGR888: return byteStride / 3;
+        case PixelFormat::NV12:
+        case PixelFormat::GRAY8:  return byteStride;  // one byte per luma pixel
+        case PixelFormat::Unknown: break;
+    }
+    return fallbackWidth;
+}
+
 int yStrideOf(const ImageView& image) {
-    return image.planes[0].stride > 0 ? image.planes[0].stride : image.size.width;
+    return pixelStride(image.format, image.planes[0].stride, image.size.width);
 }
 
 // RGA describes a buffer by width/height stride, so an NV12 frame whose chroma
 // plane sits at a custom offset has to be expressed as a taller Y plane.
 int hStrideOf(const ImageView& image) {
     if (image.format != PixelFormat::NV12) return image.size.height;
-    const int ws = yStrideOf(image);
+    const int ws = yStrideOf(image);  // NV12 luma: one byte per pixel, so this is both
     const std::size_t uvOffset = image.planes[1].offset;
     if (uvOffset > 0 && ws > 0) return static_cast<int>(uvOffset / static_cast<std::size_t>(ws));
     return image.size.height;
 }
 
 int strideOfMutable(const MutableImageView& image) {
-    if (image.planes[0].stride > 0) {
-        return image.format == PixelFormat::NV12 ? image.planes[0].stride
-                                                 : image.planes[0].stride / 3;
-    }
-    return image.size.width;
+    return pixelStride(image.format, image.planes[0].stride, image.size.width);
 }
 
 // --- low-level blit ----------------------------------------------------------
