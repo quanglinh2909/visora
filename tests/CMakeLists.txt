@@ -41,3 +41,9 @@ add_executable(codec_tests codec_tests.cpp)
 target_link_libraries(codec_tests PRIVATE visora::media visora::backends)
 target_include_directories(codec_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME codec_tests COMMAND codec_tests)
+
+# Camera pipelines: equivalent to the predecessor, and accepted by GStreamer.
+add_executable(pipeline_tests pipeline_tests.cpp)
+target_link_libraries(pipeline_tests PRIVATE visora::media visora::backends)
+target_include_directories(pipeline_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME pipeline_tests COMMAND pipeline_tests)

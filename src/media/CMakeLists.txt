@@ -13,6 +13,7 @@ add_library(visora_media STATIC
     gst/ElementAvailability.cpp
     gst/ElementSpec.cpp
     gst/LaunchPipeline.cpp
+    pipeline/CameraPipelines.cpp
 )
 add_library(visora::media ALIAS visora_media)
 
