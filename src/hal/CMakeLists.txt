@@ -22,3 +22,7 @@ add_subdirectory(cpu)
 if(VISORA_WITH_ROCKCHIP)
     add_subdirectory(rockchip)
 endif()
+
+if(VISORA_WITH_ONNXRUNTIME)
+    add_subdirectory(onnxruntime)
+endif()

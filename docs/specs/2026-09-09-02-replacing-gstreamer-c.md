@@ -106,7 +106,10 @@ RK3588 board.
 | 6 | Recording and playback: shared source, segments, HLS, range requests, retention, thumbnail | done |
 | 7a | WebRTC live viewing (WHEP), passthrough and transcode | done |
 | 7b | MoQ feed, playback over WebRTC | done |
-| 8 | Vision: model catalog, stages, transforms, AI job pipeline, motion detection, ONNX Runtime backend | next |
+| 8a | Vision domain: stage trees, model types, transforms, YOLOv8 decode | done |
+| 8b | AI runtime, jobs, REST surface | done |
+| 8c | ONNX Runtime backend | done |
+| 8d | Motion detection, `/ws/motion-events`, more model types | next |
 | 9 | Cutover: run both against the same cameras and database, compare, then retire `gstreamer_c` | |
 
 Step 3 came before the pipeline work on purpose. Locking the external contract
@@ -125,6 +128,10 @@ Runnable today, on x86_64 and on RK3588:
   play back as HLS with byte-range seeking, a scrub thumbnail and day-based
   retention. Verified against a real PostgreSQL and decoded end to end by
   ffmpeg.
+- AI jobs run on cameras and publish results to the socket
+  `gstreamer_ai_python` reads. Verified end to end with the REAL consumer:
+  60 frames analysed, 60 results published, every message parsed, boxes
+  mapped correctly back through the letterbox, JPEG decoded and crops saved.
 - Recordings play back over the SAME WebRTC transport, with seek, pause and
   speed on a session that is opened once. At 4x and above only keyframes are
   sent, so scrubbing gets smoother as it gets faster.
@@ -145,8 +152,9 @@ Runnable today, on x86_64 and on RK3588:
   produces real results until step 8.
 - Ten test suites, all passing on both architectures.
 
-Not yet ported, and the reason to keep running `gstreamer_c` in production:
-motion detection and the entire AI pipeline.
+Not yet ported: motion detection, and the model types beyond YOLOv8 detection
+(pose, segmentation, face recognition, the PP-OCR family). Each is now one
+file — see `vision/models/Yolov8Detect.cpp` for the shape.
 
 34 of the 49 endpoints are done.
 

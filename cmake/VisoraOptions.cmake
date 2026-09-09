@@ -34,6 +34,33 @@ endif()
 
 option(VISORA_WITH_ROCKCHIP "Rockchip RGA + RKNN backends" ${_visora_rockchip_default})
 
+# --- ONNX Runtime: inference everywhere an NPU is not ------------------------
+# The portable inference backend. On a workstation it runs on the CPU or, with
+# the matching build, on CUDA/TensorRT/OpenVINO; on a board it is what runs a
+# .onnx that the NPU toolchain has not converted.
+#
+# Not vendored in the repository: the official builds are large and
+# per-platform. Download one from
+# https://github.com/microsoft/onnxruntime/releases and unpack it into
+# third_party/onnxruntime (git-ignored), or point VISORA_ONNXRUNTIME_ROOT at it.
+find_path(VISORA_ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
+    HINTS
+        "$ENV{VISORA_ONNXRUNTIME_ROOT}/include"
+        "${CMAKE_SOURCE_DIR}/third_party/onnxruntime/include"
+    PATH_SUFFIXES onnxruntime)
+find_library(VISORA_ONNXRUNTIME_LIB onnxruntime
+    HINTS
+        "$ENV{VISORA_ONNXRUNTIME_ROOT}/lib"
+        "${CMAKE_SOURCE_DIR}/third_party/onnxruntime/lib")
+
+if(VISORA_ONNXRUNTIME_INCLUDE_DIR AND VISORA_ONNXRUNTIME_LIB)
+    set(_visora_onnx_default ON)
+else()
+    set(_visora_onnx_default OFF)
+endif()
+
+option(VISORA_WITH_ONNXRUNTIME "ONNX Runtime inference backend" ${_visora_onnx_default})
+
 # --- oatpp: the HTTP API and persistence layers -------------------------------
 # Comes from vcpkg. Auto-detected like everything else, so a contributor working
 # on pixels or pipelines builds the lower layers without it.
@@ -88,6 +115,14 @@ elseif(NOT oatpp_FOUND)
     visora_summary("HTTP API" "NO " "oatpp not found - configure with the vcpkg toolchain")
 else()
     visora_summary("HTTP API" "NO " "disabled by VISORA_WITH_API=OFF")
+endif()
+
+if(VISORA_WITH_ONNXRUNTIME)
+    visora_summary("ONNX Runtime" "YES" "${VISORA_ONNXRUNTIME_LIB}")
+elseif(NOT VISORA_ONNXRUNTIME_LIB)
+    visora_summary("ONNX Runtime" "NO " "not found - see docs/onnxruntime-setup.md")
+else()
+    visora_summary("ONNX Runtime" "NO " "disabled by VISORA_WITH_ONNXRUNTIME=OFF")
 endif()
 
 if(VISORA_WITH_ROCKCHIP)
