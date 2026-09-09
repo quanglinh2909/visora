@@ -28,16 +28,21 @@
 // Anything still refused is reported as Unsupported or HardwareFailure, and the
 // chain in hal/ImageOps.cpp finishes the job in software.
 
-#include <rga/im2d.h>
-#include <rga/rga.h>
-
+// The standard headers come FIRST on purpose. The installed
+// /usr/include/rga/im2d_single.h uses NULL in default arguments without
+// including <cstddef> itself, so it only compiles if something has already
+// defined NULL. Reordering these is a build break on a real board, not a tidy-up.
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
+
+#include <rga/im2d.h>
+#include <rga/rga.h>
 
 #include "core/Log.hpp"
 #include "hal/ImageOps.hpp"

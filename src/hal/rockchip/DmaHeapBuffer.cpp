@@ -8,11 +8,14 @@
 #include <linux/dma-buf.h>
 #include <linux/dma-heap.h>
 
-#include <rga/im2d.h>
-
+// Standard headers before <rga/im2d.h>: the vendor header uses NULL in default
+// arguments without defining it. See the note in RgaImageOps.cpp.
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
 #include <mutex>
+
+#include <rga/im2d.h>
 
 #include "core/Log.hpp"
 #include "hal/rockchip/RgaLock.hpp"
