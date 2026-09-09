@@ -32,19 +32,25 @@ test file alone and checks selection finds it.
 
 ```
 app/     executables and wiring
-api/     REST controllers, DTOs, database, websockets      [not yet written]
-media/   camera sessions, recording, playback, webrtc      [not yet written]
-vision/  AI pipeline, jobs, models, transforms             [not yet written]
+api/     REST controllers, DTOs, websockets
+store/   repository adapters (in-memory, PostgreSQL)
+media/   camera sessions, recording, playback, webrtc, moq, the AI runtime
+vision/  jobs, model types, transforms, motion, the result contract
 hal/     the extension mechanism and the interfaces
-core/    types, geometry, logging, Result<T>
+core/    types, geometry, time, JSON escaping, logging, Result<T>
 ```
 
 Dependencies point **down only**:
 
 ```
-app -> api -> {media, vision} -> hal -> core
-                        hal_* ----^
+app -> api -> store -> media -> vision -> hal -> core
+                        hal_* ------------^
 ```
+
+`media` depends on `vision` rather than the reverse: the AI RUNTIME (decoding
+frames, running workers, encoding JPEGs) is pipeline work and needs GStreamer,
+while what a job IS, what a model type does with tensors and how motion is
+decided are business rules that must stay testable with nothing installed.
 
 This is enforced by the build, not by convention. `visora_core` links nothing:
 if something in `core/` reaches for GStreamer, OpenCV or a vendor SDK, it fails
@@ -58,8 +64,10 @@ logic be tested on any machine, in any container, with no devices attached.
 | `core/` | Would this compile on a machine with nothing installed? Arithmetic, types, formatting, logging. |
 | `hal/` | Does this differ between vendors? An interface here, an implementation per vendor below. |
 | `hal/<vendor>/` | The only place a vendor header (`rga/im2d.h`, `rknn_api.h`, CUDA, VAAPI) may be included. |
-| `media/`, `vision/` | Business logic. Talks to hardware only through `hal` interfaces. |
-| `api/` | HTTP and database shapes. No pipeline logic. |
+| `vision/` | Business rules with no pipeline: what a job is, what tensors mean, whether motion happened. Must build and test with no GStreamer and no accelerator. |
+| `media/` | Pipelines and the runtime around them. Talks to hardware only through `hal` interfaces and codec providers. |
+| `store/` | Repository adapters. The PORTS are declared in the domain, not here. |
+| `api/` | HTTP shapes. No business logic — parse, delegate, map. |
 
 If a vendor header appears outside `hal/<vendor>/`, that is a bug regardless of
 whether it compiles today.
@@ -265,3 +273,39 @@ The lesson generalises to any accelerator backend:
 - `ImageView::data` and `ImageView::dmaFd` are independent. A decoder frame may
   expose only a dmabuf, a synthetic image only a CPU pointer. A backend that can
   use neither must return `Unsupported`, not crash.
+
+- **Never `gst_bus_add_watch`.** It attaches to GLib's DEFAULT main context,
+  which this program never iterates — the RTSP server runs its own. The watch is
+  installed, returns a valid id and is never called. Use `media::BusWatcher`,
+  which polls on a thread of its own. This cost a day: recording wrote every
+  segment to disk and indexed none of them, silently.
+
+- **Never `::` in SQL.** oatpp's template parser reads `:name` as a bound
+  parameter and, on `::`, consumes the first colon and parses the second as one
+  — so `id::text` asks for a parameter called "text" and the query dies with
+  "Parameter not found". Use `CAST(x AS TEXT)`. Quoted strings ARE skipped by
+  that parser, so a colon inside a literal is safe.
+
+- **Never `oatpp::Any::retrieve<T>()` unguarded on a query result.** It THROWS
+  on a type mismatch, on an HTTP worker thread with no handler above it, so one
+  unexpected column type ends the process. Read through `store::RowReader`, and
+  cast UUID columns in SQL — PostgreSQL returns them as UUIDs, not strings.
+
+- **Copy decoded frames row by row.** A hardware decoder pads rows to its own
+  alignment; a memcpy of the whole plane embeds that padding as image data and
+  produces a picture that leans further sideways with every row.
+
+- **A provider's `available()` is one boolean but a provider offers several
+  roles.** Check the specific element before handing it out — a machine with
+  `jpegenc` and no `x264enc` is normal, and gating all three roles on one lost a
+  board its snapshots entirely.
+
+- **Clear `GST_BUFFER_PTS` before pushing into an appsrc with
+  `do-timestamp=true`.** Buffers from another pipeline carry another clock, and
+  do-timestamp only stamps a buffer that has none. Left in place, splitmuxsink
+  cuts segments in the wrong places and a WebRTC viewer gets timestamps the
+  browser cannot use — connected, and black.
+
+- **An Ort `TypeInfo` must outlive the shape info taken from it.**
+  `GetTensorTypeAndShapeInfo()` returns a borrowing view; written as one
+  expression the parent is a temporary and `GetShape()` reads freed memory.

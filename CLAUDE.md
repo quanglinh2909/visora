@@ -9,19 +9,33 @@ version; that one has the reasoning.
 
 ## Status
 
-Being built up in stages. Written and verified so far:
+The port from `../gstreamer_c` is essentially complete: 48 of its 49 endpoints,
+and every step verified on x86_64 AND on an RK3588 board. Consult that repo for
+behaviour and for hardware detail nobody should rediscover — never for
+structure. **Do not modify it**; it is frozen and still in production.
 
-- `src/core/` — types, geometry, image description, fit/crop maths, logging, `Result<T>`
-- `src/hal/` — backend registry, `ImageOps`, `InferenceBackend`, `NativeHandle`, capability report
-- `src/hal/cpu/` — full software image path on OpenCV
-- `src/apps/visora-probe/` — capability report CLI
-- `tests/` — `core_tests`, `hal_tests` (19 cases, passing on x86_64)
+Working and verified:
 
-Not written yet: `media/` (GStreamer sessions, recording, playback, WebRTC),
-`vision/` (AI pipeline and models), `api/` (REST, database), the `CodecProvider`
-interface, and the Rockchip and ONNX Runtime backends. Logic for these is being
-ported from `../gstreamer_c`, a working single-platform (RK3588) system — consult
-it for behaviour, never copy its structure.
+- `core/` — types, geometry, image description, fit/crop maths, time, JSON
+  escaping, logging, `Result<T>`
+- `hal/` — the registry, `ImageOps`, `InferenceBackend`, capability report;
+  backends for CPU/OpenCV, Rockchip RGA + RKNN, and ONNX Runtime
+- `media/` — codec providers (rockchip/nvidia/vaapi/v4l2/software), the shared
+  camera source, RTSP restream, recording, playback, WebRTC (live and
+  recordings), MoQ, the AI runtime
+- `vision/` — stage trees, model types, transforms, the YOLOv8 decode, motion
+  detection, the result wire contract
+- `store/` — in-memory and PostgreSQL adapters
+- `api/` — the REST surface and two websockets
+- 15 test suites, passing on both architectures
+
+Deliberately not finished — see `docs/specs/2026-09-09-03-cutover.md`:
+
+- model types beyond YOLOv8 detection (pose, segmentation, face, PP-OCR)
+- AI jobs are stored in memory, not PostgreSQL
+- motion event snapshots (`motion_events.image_path` is never populated)
+- the RTSP restream still opens its own connection rather than using the shared
+  source
 
 ## The one rule
 
