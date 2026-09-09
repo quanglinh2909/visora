@@ -138,8 +138,28 @@ rga_buffer_t emptyBuffer() {
     return buffer;
 }
 
-IM_STATUS runBlit(const rga_buffer_t& src, const rga_buffer_t& dst,
-                  const im_rect& srect, const im_rect& drect) {
+// How a buffer was handed to RGA. Tracked explicitly rather than inferred from
+// rga_buffer_t, whose layout differs across librga releases.
+enum class BufferMode { VirtualAddress, Handle };
+
+// Last line of defence against mixing buffer modes in one job.
+//
+// A raw-pointer source paired with an imported-handle destination does not
+// return an error: it wedges the RGA driver, and a wedged RGA takes the rest of
+// the machine with it — on an RK3588 board this stopped sshd answering and cost
+// a power cycle. Checking every job is far cheaper than trusting call sites, and
+// a returned error is something the fallback chain already knows how to handle.
+IM_STATUS runBlit(const rga_buffer_t& src, BufferMode srcMode, const rga_buffer_t& dst,
+                  BufferMode dstMode, const im_rect& srect, const im_rect& drect) {
+    if (srcMode != dstMode) {
+        VS_ERROR(kCategory) << "refusing a mixed-mode blit (source "
+                            << (srcMode == BufferMode::Handle ? "handle" : "virtual-address")
+                            << ", destination "
+                            << (dstMode == BufferMode::Handle ? "handle" : "virtual-address")
+                            << ") - this would hang the RGA driver. This is a bug in the "
+                               "caller; falling back to software.";
+        return IM_STATUS_INVALID_PARAM;
+    }
     rga_buffer_t pattern = emptyBuffer();
     im_rect prect = makeRect(Rect{0, 0, 0, 0});
     std::lock_guard<std::mutex> lock(rgaMutex());
@@ -147,17 +167,20 @@ IM_STATUS runBlit(const rga_buffer_t& src, const rga_buffer_t& dst,
 }
 
 // Describes the source for RGA, in whichever mode the image allows.
-bool describeSource(const ImageView& image, int rgaFormat, rga_buffer_t* out) {
+bool describeSource(const ImageView& image, int rgaFormat, rga_buffer_t* out,
+                    BufferMode* mode) {
     if (image.hasNativeHandle()) {
         *out = wrapbuffer_handle(static_cast<rga_buffer_handle_t>(image.nativeHandle),
                                  image.size.width, image.size.height, rgaFormat,
                                  yStrideOf(image), hStrideOf(image));
+        *mode = BufferMode::Handle;
         return true;
     }
     if (image.hasCpu()) {
         *out = wrapbuffer_virtualaddr(const_cast<std::uint8_t*>(image.data), image.size.width,
                                       image.size.height, rgaFormat, yStrideOf(image),
                                       hStrideOf(image));
+        *mode = BufferMode::VirtualAddress;
         return true;
     }
     return false;
@@ -311,20 +334,37 @@ private:
                             << dstRect.width << 'x' << dstRect.height << " in " << passes
                             << " passes (per-pass limit " << kMaxScalePerPass << "x)";
 
-        // Intermediates carry the destination format so the colour conversion
+        // Intermediates carry the destination format, so the colour conversion
         // happens once, on the first pass.
+        //
+        // They also stay in the source's buffer mode the whole way down. A
+        // handle-mode source blits into dma-heap scratches, which are then
+        // described BY HANDLE for the next pass; a virtual-address source blits
+        // into ordinary heap scratches. Switching modes part-way is what wedges
+        // the driver.
+        const bool handleMode = src.hasNativeHandle();
         ImageView current = src;
         Rect currentRect = srcRect;
         int currentFormat = srcFormat;
 
         for (int pass = 0; pass < passes - 1; ++pass) {
             const Size target = intermediateSize(srcRect.size(), dstRect.size(), pass, passes);
-            DmaHeapBuffer& scratch = passScratch(pass);
-            const core::Status step = blitToScratch(current, currentFormat, currentRect,
-                                                    dstFormat, target, scratch);
-            if (!step.ok()) return step;
 
-            current = scratchView(scratch, dst.format, target);
+            if (handleMode) {
+                DmaHeapBuffer& scratch = passScratch(pass);
+                const core::Status step = blitToDmaScratch(current, currentFormat, currentRect,
+                                                           dstFormat, target, scratch);
+                if (!step.ok()) return step;
+                current = dmaScratchView(scratch, dst.format, target);
+            } else {
+                std::vector<std::uint8_t>& scratch = passHeapScratch(pass);
+                int stride = 0;
+                const core::Status step = blitToHeapScratch(current, currentFormat, currentRect,
+                                                            dstFormat, target, scratch, &stride);
+                if (!step.ok()) return step;
+                current = heapScratchView(scratch.data(), stride, dst.format, target);
+            }
+
             currentRect = Rect{0, 0, target.width, target.height};
             currentFormat = dstFormat;
         }
@@ -332,49 +372,73 @@ private:
         return blitOnce(current, currentFormat, currentRect, dst, dstFormat, dstRect);
     }
 
-    // A blit whose destination is the caller's buffer. Uses a stride-aligned
-    // dma-heap scratch when the destination stride or the source mode requires
-    // it, then copies the rows back.
+    // A blit whose destination is the caller's buffer.
+    //
+    // The scratch it may need MUST match the source's mode. A job is either
+    // fully handle-mode or fully virtual-address mode; pairing a raw-pointer
+    // source with a dma-heap handle destination does not fail cleanly, it wedges
+    // the RGA driver hard enough to take sshd down with it. This was not a
+    // theory — it happened on an RK3588 board and cost a power cycle.
     core::Status blitOnce(const ImageView& src, int srcFormat, Rect srcRect,
                           const MutableImageView& dst, int dstFormat, Rect dstRect) {
-        const bool handleMode = src.hasNativeHandle();
         const int dstPixelStride = strideOfMutable(dst);
         const bool strideOk = dst.format == PixelFormat::NV12 ||
                               dstPixelStride % kRgbStrideAlign == 0;
+        const bool wholeDestination = dstRect.x == 0 && dstRect.y == 0 &&
+                                      dstRect.width == dst.size.width &&
+                                      dstRect.height == dst.size.height;
 
-        // A handle-mode source must not be paired with a raw pointer
-        // destination, and a CPU-read destination in handle mode has to be
-        // dma-heap memory to get its cache invalidated. Either condition sends
-        // us through the scratch.
-        if (handleMode || !strideOk) {
+        if (src.hasNativeHandle()) {
+            // Handle mode. A CPU-read destination must be dma-heap memory to get
+            // its cache invalidated after the blit, so it always goes via the
+            // scratch — imported malloc memory gets no per-job cache maintenance
+            // and the CPU reads stale lines.
             const Size target = dstRect.size();
             DmaHeapBuffer& scratch = outputScratch();
             const core::Status blitted =
-                blitToScratch(src, srcFormat, srcRect, dstFormat, target, scratch);
+                blitToDmaScratch(src, srcFormat, srcRect, dstFormat, target, scratch);
             if (!blitted.ok()) return blitted;
-            copyOut(scratch, target, dst, dstRect);
+            copyOut(scratch.data(), scratch.wstride(), target, dst, dstRect);
             return {};
         }
 
-        rga_buffer_t source;
-        if (!describeSource(src, srcFormat, &source)) {
-            return core::unsupported("rga source has neither handle nor pointer");
+        // Virtual-address mode throughout. Straight into the caller's buffer
+        // when the stride suits RGA and we are filling the whole destination;
+        // otherwise via a plain heap scratch, which stays in the same mode.
+        if (strideOk && wholeDestination) {
+            rga_buffer_t source;
+            BufferMode sourceMode = BufferMode::VirtualAddress;
+            if (!describeSource(src, srcFormat, &source, &sourceMode)) {
+                return core::unsupported("rga source has neither handle nor pointer");
+            }
+            rga_buffer_t destination =
+                wrapbuffer_virtualaddr(dst.data, dst.size.width, dst.size.height, dstFormat,
+                                       dstPixelStride, dst.size.height);
+            const IM_STATUS status = runBlit(source, sourceMode, destination,
+                                             BufferMode::VirtualAddress, makeRect(srcRect),
+                                             makeRect(dstRect));
+            if (status != IM_STATUS_SUCCESS) {
+                return core::hardwareFailure(std::string("improcess failed: ") +
+                                             imStrError(status));
+            }
+            return {};
         }
-        rga_buffer_t destination =
-            wrapbuffer_virtualaddr(dst.data, dst.size.width, dst.size.height, dstFormat,
-                                   dstPixelStride, dst.size.height);
 
-        const IM_STATUS status = runBlit(source, destination, makeRect(srcRect), makeRect(dstRect));
-        if (status != IM_STATUS_SUCCESS) {
-            return core::hardwareFailure(std::string("improcess failed: ") + imStrError(status));
-        }
+        const Size target = dstRect.size();
+        std::vector<std::uint8_t>& scratch = heapScratch();
+        int scratchStride = 0;
+        const core::Status blitted =
+            blitToHeapScratch(src, srcFormat, srcRect, dstFormat, target, scratch, &scratchStride);
+        if (!blitted.ok()) return blitted;
+        copyOut(scratch.data(), scratchStride, target, dst, dstRect);
         return {};
     }
 
-    // A blit into a stride-aligned dma-heap scratch, which is the only kind of
-    // CPU-readable destination that is safe in handle mode.
-    core::Status blitToScratch(const ImageView& src, int srcFormat, Rect srcRect, int dstFormat,
-                               Size target, DmaHeapBuffer& scratch) {
+    // A blit into a stride-aligned dma-heap scratch. Handle mode only: this is
+    // the one kind of CPU-readable destination that gets proper cache
+    // maintenance, and pairing it with a raw-pointer source wedges the driver.
+    core::Status blitToDmaScratch(const ImageView& src, int srcFormat, Rect srcRect,
+                                  int dstFormat, Size target, DmaHeapBuffer& scratch) {
         const bool packed = dstFormat == RK_FORMAT_YCbCr_420_SP;
         const int wstride = packed ? target.width : alignUp(target.width, kRgbStrideAlign);
         const std::size_t bytes =
@@ -387,15 +451,17 @@ private:
         }
 
         rga_buffer_t source;
-        if (!describeSource(src, srcFormat, &source)) {
+        BufferMode sourceMode = BufferMode::VirtualAddress;
+        if (!describeSource(src, srcFormat, &source, &sourceMode)) {
             return core::unsupported("rga source has neither handle nor pointer");
         }
         rga_buffer_t destination =
             wrapbuffer_handle(static_cast<rga_buffer_handle_t>(scratch.handle()), target.width,
                               target.height, dstFormat, wstride, target.height);
 
-        const IM_STATUS status = runBlit(source, destination, makeRect(srcRect),
-                                         makeRect(Rect{0, 0, target.width, target.height}));
+        const IM_STATUS status =
+            runBlit(source, sourceMode, destination, BufferMode::Handle, makeRect(srcRect),
+                    makeRect(Rect{0, 0, target.width, target.height}));
         if (status != IM_STATUS_SUCCESS) {
             return core::hardwareFailure(std::string("improcess failed: ") + imStrError(status));
         }
@@ -403,25 +469,75 @@ private:
         return {};
     }
 
-    static ImageView scratchView(const DmaHeapBuffer& scratch, PixelFormat format, Size size) {
+    // The virtual-address counterpart: ordinary heap memory, so a raw-pointer
+    // source stays paired with a raw-pointer destination. Used when the
+    // caller's stride does not suit RGA, or when the blit lands in part of a
+    // larger destination (the letterbox content rect).
+    core::Status blitToHeapScratch(const ImageView& src, int srcFormat, Rect srcRect,
+                                   int dstFormat, Size target,
+                                   std::vector<std::uint8_t>& scratch, int* outStride) {
+        const bool packed = dstFormat == RK_FORMAT_YCbCr_420_SP;
+        const int wstride = packed ? target.width : alignUp(target.width, kRgbStrideAlign);
+        const std::size_t bytes =
+            packed ? static_cast<std::size_t>(wstride) * target.height * 3 / 2
+                   : static_cast<std::size_t>(wstride) * target.height * 3;
+        scratch.assign(bytes, 0);
+        *outStride = wstride;
+
+        rga_buffer_t source;
+        BufferMode sourceMode = BufferMode::VirtualAddress;
+        if (!describeSource(src, srcFormat, &source, &sourceMode)) {
+            return core::unsupported("rga source has neither handle nor pointer");
+        }
+        rga_buffer_t destination = wrapbuffer_virtualaddr(scratch.data(), target.width,
+                                                          target.height, dstFormat, wstride,
+                                                          target.height);
+
+        const IM_STATUS status =
+            runBlit(source, sourceMode, destination, BufferMode::VirtualAddress,
+                    makeRect(srcRect), makeRect(Rect{0, 0, target.width, target.height}));
+        if (status != IM_STATUS_SUCCESS) {
+            return core::hardwareFailure(std::string("improcess failed: ") + imStrError(status));
+        }
+        return {};
+    }
+
+    static ImageView scratchViewCommon(const std::uint8_t* data, int pixelStrideValue,
+                                       PixelFormat format, Size size) {
         ImageView view;
         view.format = format;
         view.size = size;
-        view.data = scratch.data();
+        view.data = data;
+        // planes[] strides are in BYTES; RGA's are in pixels. pixelStride()
+        // converts back at the boundary.
         if (format == PixelFormat::NV12) {
-            view.planes[0] = {scratch.wstride(), 0};
-            view.planes[1] = {scratch.wstride(),
-                              static_cast<std::size_t>(scratch.wstride()) *
-                                  static_cast<std::size_t>(size.height)};
+            view.planes[0] = {pixelStrideValue, 0};
+            view.planes[1] = {pixelStrideValue, static_cast<std::size_t>(pixelStrideValue) *
+                                                    static_cast<std::size_t>(size.height)};
         } else {
-            view.planes[0] = {scratch.wstride() * 3, 0};
+            view.planes[0] = {pixelStrideValue * 3, 0};
         }
         return view;
     }
 
-    // Copies the scratch content into the caller's buffer, row by row because
-    // the strides differ.
-    static void copyOut(const DmaHeapBuffer& scratch, Size target,
+    // Carries the dma-heap handle, so the next pass describes it by handle and
+    // the job stays entirely in handle mode.
+    static ImageView dmaScratchView(const DmaHeapBuffer& scratch, PixelFormat format, Size size) {
+        ImageView view = scratchViewCommon(scratch.data(), scratch.wstride(), format, size);
+        view.nativeHandle = scratch.handle();
+        view.dmaFd = scratch.fd();
+        return view;
+    }
+
+    static ImageView heapScratchView(const std::uint8_t* data, int stride, PixelFormat format,
+                                     Size size) {
+        return scratchViewCommon(data, stride, format, size);
+    }
+
+    // Copies scratch content into the caller's buffer, row by row because the
+    // strides differ. Takes a pointer and a pixel stride so the dma-heap and
+    // heap scratches share one implementation.
+    static void copyOut(const std::uint8_t* scratchData, int scratchStride, Size target,
                         const MutableImageView& dst, Rect dstRect) {
         if (dst.format == PixelFormat::NV12) {
             const int dstStride = dst.planes[0].stride > 0 ? dst.planes[0].stride : dst.size.width;
@@ -432,16 +548,16 @@ private:
             for (int row = 0; row < target.height; ++row) {
                 std::memcpy(dst.data +
                                 static_cast<std::size_t>(dstRect.y + row) * dstStride + dstRect.x,
-                            scratch.data() + static_cast<std::size_t>(row) * scratch.wstride(),
+                            scratchData + static_cast<std::size_t>(row) * scratchStride,
                             static_cast<std::size_t>(target.width));
             }
             const std::uint8_t* srcUv =
-                scratch.data() + static_cast<std::size_t>(scratch.wstride()) * target.height;
+                scratchData + static_cast<std::size_t>(scratchStride) * target.height;
             for (int row = 0; row < target.height / 2; ++row) {
                 std::memcpy(dst.data + dstUv +
                                 static_cast<std::size_t>(dstRect.y / 2 + row) * dstStride +
                                 dstRect.x,
-                            srcUv + static_cast<std::size_t>(row) * scratch.wstride(),
+                            srcUv + static_cast<std::size_t>(row) * scratchStride,
                             static_cast<std::size_t>(target.width));
             }
             return;
@@ -452,8 +568,7 @@ private:
         for (int row = 0; row < target.height; ++row) {
             std::memcpy(dst.data + static_cast<std::size_t>(dstRect.y + row) * dstStride +
                             static_cast<std::size_t>(dstRect.x) * 3,
-                        scratch.data() +
-                            static_cast<std::size_t>(row) * scratch.wstride() * 3,
+                        scratchData + static_cast<std::size_t>(row) * scratchStride * 3,
                         static_cast<std::size_t>(target.width) * 3);
         }
     }
@@ -464,9 +579,18 @@ private:
         thread_local DmaHeapBuffer buffer;
         return buffer;
     }
+    static std::vector<std::uint8_t>& heapScratch() {
+        thread_local std::vector<std::uint8_t> buffer;
+        return buffer;
+    }
     static DmaHeapBuffer& passScratch(int index) {
         thread_local DmaHeapBuffer first;
         thread_local DmaHeapBuffer second;
+        return (index % 2 == 0) ? first : second;
+    }
+    static std::vector<std::uint8_t>& passHeapScratch(int index) {
+        thread_local std::vector<std::uint8_t> first;
+        thread_local std::vector<std::uint8_t> second;
         return (index % 2 == 0) ? first : second;
     }
 };

@@ -228,6 +228,24 @@ VISORA_IMAGE_BACKEND=cpu build/bin/visora-probe
   claiming they work — the RGA and dmabuf code in particular carries kernel-oops
   caveats that no software test exercises.
 
+## When a backend can wedge the machine
+
+Some hardware failures are not exceptions — they are hangs. Rockchip's RGA does
+not reject a job that mixes buffer modes; it stops responding, and takes enough
+of the system with it that a board needs a power cycle. That happened here on
+2026-09-09.
+
+The lesson generalises to any accelerator backend:
+
+- **Validate the dangerous invariant in code, at the last moment before the
+  driver call.** Documenting it is not enough; the rule was written down in this
+  repository and violated in the same file a few hundred lines later.
+- **Turn the hang into an error.** `RgaImageOps::runBlit` refuses a mixed-mode
+  job and returns `HardwareFailure`, which the fallback chain already knows how
+  to handle. A software fallback is a cheap price; a wedged board is not.
+- **Assume hardware tests can take the machine down.** Do not run a first
+  hardware bring-up on something you cannot power-cycle.
+
 ## Known invariants worth not breaking
 
 - Chroma-subsampled formats cannot represent odd offsets or extents. Anything

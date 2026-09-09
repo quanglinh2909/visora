@@ -89,8 +89,21 @@ on the CPU.
   `get_user_pages`, and on a PFN-mapped dmabuf vma that intermittently produces a
   bogus scatter-gather entry and oopses the kernel in `__clean_dcache_area_poc`,
   sometimes freezing the board. Import the fd instead.
-- **A blit is fully handle-mode or fully virtual-address mode.** Mixing an
-  imported handle with a raw pointer in one job is rejected.
+- **A blit is fully handle-mode or fully virtual-address mode.** This is the
+  most dangerous rule here, because breaking it does not return an error.
+  Pairing a raw-pointer source with a dma-heap handle destination **hangs the
+  RGA driver**, and a wedged RGA takes the machine with it: on an Orange Pi 5
+  the board kept answering ping while sshd stopped completing connections, and
+  it needed a power cycle. Observed 2026-09-09, while running the conformance
+  suite against a destination whose width was not 16-aligned.
+
+  `runBlit` now refuses a mixed-mode job before it reaches the driver and
+  returns an error the fallback chain handles, so a mistake here costs a
+  software fallback rather than the board. Do not remove that check.
+
+  In practice: a handle-mode source blits into dma-heap scratches, which are
+  then described **by handle** for any following pass; a virtual-address source
+  blits into ordinary heap scratches. Never cross over mid-operation.
 - **CPU-read destinations in handle mode must be dma-heap memory** and need
   `DMA_BUF_IOCTL_SYNC` after the blit. Imported malloc memory gets no per-job
   cache maintenance and the CPU reads stale lines — visible as posterised images.
