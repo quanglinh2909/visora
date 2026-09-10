@@ -1,5 +1,7 @@
 #include "media/moq/MoqService.hpp"
 
+#include "media/source/TranscodedSource.hpp"
+
 #include <utility>
 
 #include "core/Log.hpp"
@@ -46,6 +48,8 @@ void MoqService::stop() {
     }
     for (auto& [id, session] : sessions) {
         session.feed->stop();
+        // The transcode reads the playback source, so it goes first.
+        if (session.transcoded) session.transcoded->stop();
         if (session.playback) session.playback->stop();
     }
 }
@@ -64,6 +68,9 @@ core::Result<MoqFeedInfo> MoqService::open(const MoqFeedRequest& request) {
 
     std::shared_ptr<EncodedSource> source;
     std::shared_ptr<PlaybackSource> playback;
+    // Kept alive for the life of the session: the feed holds the EncodedSource
+    // it reads, but the session owns the pipeline behind it.
+    std::shared_ptr<TranscodedSource> transcoded;
 
     if (request.mode == "playback") {
         if (!m_recordings) return core::unsupported("this build has no recording index");
@@ -89,12 +96,34 @@ core::Result<MoqFeedInfo> MoqService::open(const MoqFeedRequest& request) {
         const core::Status started = playback->start();
         if (!started.ok()) return started.error();
         source = playback;
+
+        // A recording in H.265 needs the same translation a live H.265 camera
+        // does, but PER SESSION: two people scrubbing the same day are at
+        // different points in it, so there is nothing to share.
+        if (codec != Codec::H264) {
+            auto transcode = std::make_shared<TranscodedSource>(request.cameraId, playback);
+            const core::Status running = transcode->start();
+            if (!running.ok()) {
+                playback->stop();
+                return running.error();
+            }
+            transcoded = transcode;
+            source = transcode;
+        }
     } else {
         if (camera.value().codec == Codec::Unknown) {
             return core::unsupported("this camera is not streaming yet");
         }
-        auto live = m_sources->acquire(request.cameraId, camera.value().inputRtsp,
-                                       camera.value().codec);
+        // AS H.264, whatever the camera sends.
+        //
+        // The MoQ server and the browser beyond it decode AVC and nothing else:
+        // a WebCodecs decoder is configured with an `avc1.*` string and Annex-B
+        // H.264, and handed H.265 it finds no AVC parameter sets and refuses
+        // the first frame with "a key frame is required after configure()".
+        // That reads as a broken stream and is really a codec nobody
+        // translated. Shared per camera, so a dozen viewers cost one transcode.
+        auto live = m_sources->acquireH264(request.cameraId, camera.value().inputRtsp,
+                                           camera.value().codec);
         if (!live) return live.error();
         source = live.value();
     }
@@ -103,11 +132,12 @@ core::Result<MoqFeedInfo> MoqService::open(const MoqFeedRequest& request) {
                                           m_config.socketPath, source);
     const core::Status started = feed->start();
     if (!started.ok()) {
+        if (transcoded) transcoded->stop();
         if (playback) playback->stop();
         return started.error();
     }
 
-    Session session{feed, playback, request.mode};
+    Session session{feed, playback, transcoded, request.mode};
     MoqFeedInfo info = describe(session);
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -126,6 +156,7 @@ core::Status MoqService::close(const std::string& sessionId) {
         m_sessions.erase(it);
     }
     session.feed->stop();
+    if (session.transcoded) session.transcoded->stop();
     if (session.playback) session.playback->stop();
     VS_INFO(kCategory) << sessionId << ": closed";
     return {};
@@ -172,6 +203,8 @@ void MoqService::sweepLoop() {
         for (auto& session : dead) {
             VS_INFO(kCategory) << session.feed->id() << ": reaped (the MoQ server went away)";
             session.feed->stop();
+            // The transcode reads the playback source, so it goes first.
+            if (session.transcoded) session.transcoded->stop();
             if (session.playback) session.playback->stop();
         }
     }

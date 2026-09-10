@@ -50,4 +50,25 @@ std::size_t CameraSourceRegistry::liveCount() const {
     return count;
 }
 
+core::Result<std::shared_ptr<EncodedSource>> CameraSourceRegistry::acquireH264(
+    const std::string& cameraId, const std::string& rtspUrl, Codec codec) {
+    auto raw = acquire(cameraId, rtspUrl, codec);
+    if (!raw) return raw;
+    if (raw.value()->codec() == Codec::H264) return raw;
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (auto held = m_transcodes[cameraId].lock()) {
+        // Alive and reading the source this camera has now. A transcode left
+        // over from a camera that has been repointed is transcoding the wrong
+        // stream, so it is replaced rather than reused.
+        if (held->alive()) return std::static_pointer_cast<EncodedSource>(held);
+    }
+
+    auto transcode = std::make_shared<TranscodedSource>(cameraId, raw.value());
+    const core::Status started = transcode->start();
+    if (!started.ok()) return started.error();
+    m_transcodes[cameraId] = transcode;
+    return std::static_pointer_cast<EncodedSource>(transcode);
+}
+
 }  // namespace visora::media

@@ -20,6 +20,7 @@
 
 #include "media/gst/ElementAvailability.hpp"
 #include "media/pipeline/CameraPipelines.hpp"
+#include "media/source/TranscodedSource.hpp"
 #include "media/stream/RetryPolicy.hpp"
 #include "media/recording/RecordingSession.hpp"
 #include "media/source/RtspEncodedSource.hpp"
@@ -243,6 +244,40 @@ VS_TEST(the_shared_source_restream_opens_no_connection_of_its_own) {
 
 VS_TEST(a_shared_restream_of_an_unknown_codec_produces_nothing) {
     VS_CHECK(restreamFromSourceLaunch(Codec::Unknown).empty());
+}
+
+VS_TEST(a_transcode_turns_h265_into_h264_and_names_no_vendor_element) {
+    // The reason it exists: a browser's WebCodecs decoder speaks AVC and
+    // nothing else, so an H.265 camera reaches it as "a key frame is required
+    // after configure()" unless something translates.
+    TranscodeOptions options;
+    const std::string launch = TranscodedSource::launchFor(Codec::H265, options);
+    VS_CHECK(!launch.empty());
+    if (launch.empty()) return;
+
+    // Fed from the shared source, not a connection of its own.
+    VS_CHECK(launch.find("appsrc") != std::string::npos);
+    VS_CHECK(launch.find("rtspsrc") == std::string::npos);
+    // Parameter sets in every keyframe, so a viewer attaching mid-stream can
+    // decode from the first one it receives.
+    VS_CHECK(launch.find("config-interval=-1") != std::string::npos);
+    // videoconvert between decoder and encoder: a hardware decoder does not
+    // necessarily produce what the encoder wants, and often cannot be asked to.
+    VS_CHECK(launch.find("videoconvert") != std::string::npos);
+    // Chosen through the codec providers. Naming mppvideodec here is what tied
+    // the predecessor to one board.
+    VS_CHECK(launch.find("mppvideodec") == std::string::npos ||
+             launch.find("mpph264enc") != std::string::npos);
+
+    std::string error;
+    if (!gstreamerParses(launch, &error)) {
+        ::visora::test::reportFailure(__FILE__, __LINE__,
+                                      "gst_parse_launch rejected the transcode: " + error);
+    }
+}
+
+VS_TEST(there_is_no_transcode_pipeline_for_an_unknown_codec) {
+    VS_CHECK(TranscodedSource::launchFor(Codec::Unknown, TranscodeOptions{}).empty());
 }
 
 VS_TEST(gstreamer_parses_what_we_build) {

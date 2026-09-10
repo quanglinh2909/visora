@@ -22,6 +22,7 @@
 #include "media/recording/RecordingRepository.hpp"
 #include "media/source/CameraSourceRegistry.hpp"
 #include "media/source/PlaybackSource.hpp"
+#include "media/source/TranscodedSource.hpp"
 
 namespace visora::media {
 
@@ -72,6 +73,11 @@ private:
     struct Session {
         std::shared_ptr<MoqFeed> feed;
         std::shared_ptr<PlaybackSource> playback;  // playback mode only
+        // The H.265 -> H.264 pass, when this session needed one of its own.
+        // A LIVE session's transcode is shared and owned by the registry; only
+        // playback builds a private one, because two people scrubbing the same
+        // day are at different points in it.
+        std::shared_ptr<TranscodedSource> transcoded;
         std::string mode;
     };
 

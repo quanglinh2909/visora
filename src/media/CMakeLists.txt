@@ -45,6 +45,7 @@ add_library(visora_media STATIC
     source/CameraSourceRegistry.cpp
     source/PlaybackSource.cpp
     source/RtspEncodedSource.cpp
+    source/TranscodedSource.cpp
     camera/CameraRuntime.cpp
     camera/CameraService.cpp
     stream/CodecProbe.cpp
