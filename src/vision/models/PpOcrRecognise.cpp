@@ -56,11 +56,11 @@ std::vector<std::string> readDictionary(const std::string& path) {
 
 class PpOcrRecognise final : public ModelType {
 public:
-    std::string_view id() const override { return "ppocr_rec"; }
+    std::string_view id() const override { return "paddle_ocr_rec"; }
     std::string_view label() const override { return "PP-OCR text recognition"; }
     std::string_view description() const override {
         return "Reads one line of text, returning a box per character with the character "
-               "itself. Give it a text crop — from a 'ppocr_det' stage, or a plate from a "
+               "itself. Give it a text crop — from a 'paddle_ocr_det' stage, or a plate from a "
                "detector.";
     }
 
@@ -193,7 +193,7 @@ private:
 };
 
 const core::Register<ModelType> registration({
-    "ppocr_rec",
+    "paddle_ocr_rec",
     /*priority=*/0,
     [] { return core::Probe::yes("PP-OCR text recognition"); },
     [] { return std::unique_ptr<ModelType>(new PpOcrRecognise()); },

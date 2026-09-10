@@ -575,7 +575,7 @@ VS_TEST(text_detection_merges_the_fragments_of_one_line_into_one_box) {
     context.contentRect = core::Rect{0, 0, 160, 160};
     context.confidence = 0.25f;
 
-    const vision::ModelType* det = vision::modelType("ppocr_det");
+    const vision::ModelType* det = vision::modelType("paddle_ocr_det");
     VS_CHECK(det != nullptr);
     if (!det) return;
 
@@ -614,7 +614,7 @@ VS_TEST(text_detection_does_not_let_a_tall_stroke_swallow_the_line_beside_it) {
     context.contentRect = core::Rect{0, 0, 160, 160};
     context.confidence = 0.25f;
 
-    auto decoded = vision::modelType("ppocr_det")->decode(tensors, context);
+    auto decoded = vision::modelType("paddle_ocr_det")->decode(tensors, context);
     VS_CHECK(decoded.ok());
     if (!decoded.ok()) return;
     VS_CHECK_EQ(decoded.value().size(), std::size_t{2});
@@ -647,7 +647,7 @@ VS_TEST(text_recognition_collapses_ctc_blanks_and_repeats_into_characters) {
     context.contentRect = core::Rect{0, 0, 320, 48};
     context.confidence = 0.25f;
 
-    const vision::ModelType* rec = vision::modelType("ppocr_rec");
+    const vision::ModelType* rec = vision::modelType("paddle_ocr_rec");
     VS_CHECK(rec != nullptr);
     if (!rec) return;
 
@@ -697,7 +697,7 @@ VS_TEST(text_recognition_reads_its_dictionary_from_beside_the_model) {
     context.confidence = 0.25f;
     context.modelPath = model;
 
-    auto decoded = vision::modelType("ppocr_rec")->decode(tensors, context);
+    auto decoded = vision::modelType("paddle_ocr_rec")->decode(tensors, context);
     VS_CHECK(decoded.ok());
     if (!decoded.ok() || decoded.value().size() != 2) return;
     VS_CHECK(decoded.value()[0].text == "X");

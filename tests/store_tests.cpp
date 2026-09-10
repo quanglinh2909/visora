@@ -52,7 +52,7 @@ VS_TEST(a_stage_tree_survives_a_round_trip_through_the_column) {
     stages.push_back(detect);
 
     vision::AiStage read;
-    read.modelType = "ppocr_rec";
+    read.modelType = "paddle_ocr_rec";
     read.modelPath = "/models/plate_rec.rknn";
     read.parent = 0;
     read.inputClasses = {7};
@@ -68,7 +68,7 @@ VS_TEST(a_stage_tree_survives_a_round_trip_through_the_column) {
     VS_CHECK(back[0].modelType == "yolov8_detect");
     VS_CHECK_EQ(back[0].parent, -1);
     VS_CHECK_EQ(back[0].classFilter.size(), std::size_t{4});
-    VS_CHECK(back[1].modelType == "ppocr_rec");
+    VS_CHECK(back[1].modelType == "paddle_ocr_rec");
     VS_CHECK_EQ(back[1].parent, 0);
     VS_CHECK_EQ(back[1].inputClasses.size(), std::size_t{1});
     VS_CHECK(back[1].transform == "crop");
@@ -83,9 +83,9 @@ VS_TEST(a_row_written_by_the_predecessor_reads_correctly) {
         R"([{"modelPath":"weights/yolov8.rknn","modelType":"yolov8_detect",)"
         R"("classFilter":"2,3,5,7","conf":0.25},)"
         R"({"parent":0,"modelPath":"weights/plate_det.rknn",)"
-        R"("modelType":"ppocr_det","inputClasses":"7","conf":0.3},)"
+        R"("modelType":"paddle_ocr_det","inputClasses":"7","conf":0.3},)"
         R"({"parent":1,"modelPath":"weights/plate_rec.rknn",)"
-        R"("modelType":"ppocr_rec","conf":0.3}])";
+        R"("modelType":"paddle_ocr_rec","conf":0.3}])";
 
     const auto stages = store::stagesFromJson(stored);
     VS_CHECK_EQ(stages.size(), std::size_t{3});
@@ -107,7 +107,7 @@ VS_TEST(a_stage_with_no_parent_field_chains_onto_the_one_before_it) {
     // no parents at all is a straight pipeline, not three roots.
     const std::string stored =
         R"([{"modelType":"yolov8_detect","modelPath":"a.rknn"},)"
-        R"({"modelType":"ppocr_rec","modelPath":"b.rknn"}])";
+        R"({"modelType":"paddle_ocr_rec","modelPath":"b.rknn"}])";
     const auto stages = store::stagesFromJson(stored);
     VS_CHECK_EQ(stages.size(), std::size_t{2});
     if (stages.size() != 2) return;

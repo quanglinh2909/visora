@@ -141,7 +141,7 @@ void mergeIntoLines(std::vector<Blob>& blobs) {
 
 class PpOcrDetect final : public ModelType {
 public:
-    std::string_view id() const override { return "ppocr_det"; }
+    std::string_view id() const override { return "paddle_ocr_det"; }
     std::string_view label() const override { return "PP-OCR text detection"; }
     std::string_view description() const override {
         return "Finds lines of text and returns a box for each. Pair it with a "
@@ -230,7 +230,7 @@ public:
 };
 
 const core::Register<ModelType> registration({
-    "ppocr_det",
+    "paddle_ocr_det",
     /*priority=*/0,
     [] { return core::Probe::yes("PP-OCR text detection"); },
     [] { return std::unique_ptr<ModelType>(new PpOcrDetect()); },
