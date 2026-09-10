@@ -6,17 +6,78 @@
 //
 //   visora-probe            human-readable table
 //   visora-probe --json     machine-readable, for CI and deployment checks
+//   visora-probe --model X  what tensors that model file actually produces
+//
+// The --model mode exists because a model type decodes SHAPES, and the shapes
+// an export really has are the one thing no amount of reading the code will
+// tell you. A YOLOv8 segmentation export was refused on a board as "not a
+// segmentation export" and the only way to find out what it was instead was to
+// look. It runs one inference on a blank frame to get them.
 
 #include <cstdio>
 #include <cstring>
 #include <string>
 
+#include <vector>
+
+#include "core/Image.hpp"
 #include "hal/Capabilities.hpp"
+#include "hal/InferenceBackend.hpp"
 #include "media/gst/CodecProvider.hpp"
+
+namespace {
+
+// Runs one inference on a blank frame and prints what came back. The values are
+// meaningless; the SHAPES are the point.
+int describeModel(const std::string& path) {
+    auto model = visora::hal::loadModel(visora::hal::ModelRef{path});
+    if (!model) {
+        std::fprintf(stderr, "cannot load %s: %s\n", path.c_str(),
+                     model.error().message.c_str());
+        return 1;
+    }
+
+    const visora::core::Size size = model.value()->inputSize();
+    const visora::core::PixelFormat format = model.value()->inputFormat();
+    std::printf("model   : %s\n", path.c_str());
+    std::printf("input   : %dx%d %s\n", size.width, size.height,
+                visora::core::toString(format));
+
+    visora::core::OwnedImage blank(format, size);
+    blank.fill(114);
+    auto tensors = model.value()->run(blank.view());
+    if (!tensors) {
+        std::fprintf(stderr, "inference failed: %s\n", tensors.error().message.c_str());
+        return 1;
+    }
+
+    std::printf("outputs : %zu\n", tensors.value().outputs.size());
+    std::size_t index = 0;
+    for (const visora::hal::Tensor& tensor : tensors.value().outputs) {
+        std::printf("  [%2zu] %-24s %-8s [", index++, tensor.name.c_str(),
+                    visora::hal::toString(tensor.type));
+        for (std::size_t d = 0; d < tensor.shape.size(); ++d) {
+            std::printf("%s%d", d ? ", " : "", tensor.shape[d]);
+        }
+        std::printf("]");
+        if (tensor.quant.quantised()) {
+            std::printf("  scale=%g zp=%d", tensor.quant.scale, tensor.quant.zeroPoint);
+        }
+        std::printf("\n");
+    }
+    return 0;
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
     bool json = false;
+    std::string modelPath;
     for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
+            modelPath = argv[++i];
+            continue;
+        }
         if (std::strcmp(argv[i], "--json") == 0) {
             json = true;
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
@@ -31,6 +92,8 @@ int main(int argc, char** argv) {
             return 0;
         }
     }
+
+    if (!modelPath.empty()) return describeModel(modelPath);
 
     visora::hal::Capabilities caps = visora::hal::detectCapabilities();
 
