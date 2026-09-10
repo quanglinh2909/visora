@@ -1,5 +1,7 @@
 #include "api/mappers/AiMapper.hpp"
 
+#include <string>
+
 namespace visora::api {
 namespace {
 
@@ -81,6 +83,30 @@ oatpp::Object<DetectionDto> toDetectionDto(const vision::Detection& detection) {
     dto->classId = detection.classId;
     if (!detection.text.empty()) dto->text = detection.text;
     dto->stage = detection.stage;
+
+    // Absent when empty, so a plain detection job pays nothing for features it
+    // does not use — the same frugality the socket format has.
+    if (!detection.keypoints.empty()) {
+        auto keypoints = oatpp::List<oatpp::Float32>::createShared();
+        for (const float value : detection.keypoints) keypoints->push_back(value);
+        dto->keypoints = keypoints;
+    }
+    if (!detection.maskBits.empty()) {
+        static const char* kHex = "0123456789abcdef";
+        std::string hex;
+        hex.reserve(detection.maskBits.size() * 2);
+        for (const unsigned char byte : detection.maskBits) {
+            hex.push_back(kHex[byte >> 4]);
+            hex.push_back(kHex[byte & 0x0F]);
+        }
+        dto->maskGrid = vision::Detection::kMaskGrid;
+        dto->mask = hex.c_str();
+    }
+    if (!detection.embedding.empty()) {
+        auto embedding = oatpp::List<oatpp::Float32>::createShared();
+        for (const float value : detection.embedding) embedding->push_back(value);
+        dto->embedding = embedding;
+    }
     dto->children = toDetectionDtoList(detection.children);
     return dto;
 }

@@ -104,6 +104,26 @@ class DetectionDto : public oatpp::DTO {
     DTO_FIELD(String, text);
     DTO_FIELD_INFO(stage) { info->description = "Which stage produced it"; }
     DTO_FIELD(Int32, stage);
+
+    // These three are what a pose, segmentation or face model produces, and
+    // leaving them out made the try-an-image endpoint useless for exactly the
+    // model types it is most needed for: it answered a pose model with boxes
+    // and no skeleton. Shaped like the socket's format so the two agree —
+    // absent when empty, and the mask as hex with its grid size beside it.
+    DTO_FIELD_INFO(keypoints) { info->description = "Flat (x, y, score) triples, in frame pixels"; }
+    DTO_FIELD(List<Float32>, keypoints);
+
+    DTO_FIELD_INFO(maskGrid) { info->description = "Side of the mask bitmap, when there is one"; }
+    DTO_FIELD(Int32, maskGrid);
+    DTO_FIELD_INFO(mask) {
+        info->description = "maskGrid x maskGrid bits covering this box, row-major, low bit "
+                            "of each byte first, as hex";
+    }
+    DTO_FIELD(String, mask);
+
+    DTO_FIELD_INFO(embedding) { info->description = "Feature vector, for a face model"; }
+    DTO_FIELD(List<Float32>, embedding);
+
     DTO_FIELD(List<oatpp::Object<DetectionDto>>, children);
 };
 
