@@ -116,6 +116,8 @@ core::Result<WhepAnswer> WebRtcService::offerPlayback(const PlaybackOffer& reque
 
     auto source = std::make_shared<PlaybackSource>(request.cameraId, m_recordings, codec,
                                                    request.atMs);
+    // Before start(), so the first frame out already moves at the asked speed.
+    if (request.rate > 0.0 && request.rate != 1.0) source->setRate(request.rate);
     const core::Status started = source->start();
     if (!started.ok()) return started.error();
 

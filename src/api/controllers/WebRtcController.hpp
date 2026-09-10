@@ -17,6 +17,9 @@
 #include <utility>
 
 #include "api/HttpError.hpp"
+#include <cstdlib>
+
+#include "api/QueryParam.hpp"
 #include "api/dto/WebRtcDto.hpp"
 #include "core/Time.hpp"
 #include "media/webrtc/WebRtcService.hpp"
@@ -90,7 +93,7 @@ public:
     }
     ENDPOINT("GET", "/webrtc/viewers", whepViewers,
              QUERY(String, cameraId, "cameraId", "")) {
-        const std::string filter = cameraId ? cameraId->c_str() : "";
+        const std::string filter = percentDecoded(cameraId);
         auto list = oatpp::List<oatpp::Object<ViewerDto>>::createShared();
         const std::int64_t now = core::nowEpochMs();
         std::int64_t live = 0;
@@ -138,15 +141,26 @@ public:
         info->addResponse(Status::CODE_404, "text/plain");
     }
     ENDPOINT("POST", "/cameras/{id}/playback/whep", playbackOffer, PATH(String, id),
-             QUERY(String, at, "at", ""),
+             QUERY(String, at, "at", ""), QUERY(String, rate, "rate", ""),
              REQUEST(std::shared_ptr<IncomingRequest>, request)) {
         media::PlaybackOffer offer;
         offer.cameraId = id ? *id : std::string();
         const auto body = request->readBodyToString();
         offer.sdp = body ? std::string(body->c_str(), body->size()) : std::string();
         offer.clientAddress = clientAddressOf(request);
-        offer.atMs = at && !at->empty() ? core::parseEpochMs(*at) : core::nowEpochMs();
-        if (offer.atMs < 0) abortWith(core::invalidArgument("'at' is not a timestamp"));
+        const std::string atText = percentDecoded(at);
+        offer.atMs = atText.empty() ? core::nowEpochMs() : parseInstant(at);
+        if (offer.atMs < 0) {
+            abortWith(core::invalidArgument("'at' is not a timestamp: " + atText));
+        }
+        // A rate that cannot be read is 1x rather than a 400: it is a comfort
+        // setting, and refusing to open a session over it would be worse than
+        // opening one at normal speed.
+        const std::string rateText = percentDecoded(rate);
+        if (!rateText.empty()) {
+            const double asked = std::strtod(rateText.c_str(), nullptr);
+            if (asked > 0.0) offer.rate = asked;
+        }
 
         const auto answer = valueOrAbort(m_webrtc->offerPlayback(offer));
         auto response = createResponse(Status::CODE_201, answer.sdp.c_str());

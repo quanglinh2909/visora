@@ -51,6 +51,10 @@ struct PlaybackOffer {
     std::string sdp;
     std::string clientAddress;
     std::int64_t atMs = 0;
+    // Speed to OPEN at, not just to change to later. A viewer scrubbing at 4x
+    // whose connection drops reconnects mid-session, and starting that session
+    // at 1x and waiting for a control message to correct it is a visible lurch.
+    double rate = 1.0;
 };
 
 // What a client may do to a playback session in flight.

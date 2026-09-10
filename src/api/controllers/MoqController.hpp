@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "api/HttpError.hpp"
+#include "api/QueryParam.hpp"
 #include "api/dto/MoqDto.hpp"
 #include "core/Time.hpp"
 #include "media/moq/MoqService.hpp"
@@ -79,8 +80,7 @@ public:
     }
     ENDPOINT("GET", "/moq/feeds", listFeeds, QUERY(String, cameraId, "cameraId", "")) {
         auto list = oatpp::List<oatpp::Object<MoqFeedDto>>::createShared();
-        for (const auto& feed :
-             m_moq->feeds(cameraId ? std::string(cameraId->c_str()) : std::string())) {
+        for (const auto& feed : m_moq->feeds(percentDecoded(cameraId))) {
             list->push_back(toDto(feed));
         }
         return createDtoResponse(Status::CODE_200, list);

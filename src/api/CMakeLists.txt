@@ -5,6 +5,7 @@
 # server and the storage swappable without touching the rules.
 add_library(visora_api STATIC
     ByteRange.cpp
+    QueryParam.cpp
     Config.cpp
     HttpError.cpp
     mappers/AiMapper.cpp

@@ -10,6 +10,7 @@
 
 #include "oatpp/parser/json/mapping/ObjectMapper.hpp"
 
+#include "api/QueryParam.hpp"
 #include "api/HttpError.hpp"
 #include "api/dto/WebRtcDto.hpp"
 #include "api/mappers/AiMapper.hpp"
@@ -296,5 +297,70 @@ VS_TEST(a_model_file_is_named_the_way_the_ui_reads_it) {
         VS_CHECK(hasKey(json, key));
     }
 }
+
+// --- query parameters --------------------------------------------------------
+
+VS_TEST(a_percent_encoded_timestamp_is_decoded_before_it_is_parsed) {
+    // The bug this exists for: the frontend proxies every engine call through a
+    // Next.js API route, which rebuilds the URL and encodes ':' as "%3A". oatpp
+    // hands query values over exactly as they arrived, so the timestamp parser
+    // saw "2026-09-10T04%3A49%3A31Z" and answered 400 — and the timeline, which
+    // treats a failed fetch as an empty day, showed a recording camera as
+    // having recorded nothing.
+    VS_CHECK(api::percentDecoded(oatpp::String("2026-09-10T04%3A49%3A31.000Z")) ==
+             "2026-09-10T04:49:31.000Z");
+    // Already decoded is left alone, because both forms arrive: the browser
+    // reaches some deployments directly.
+    VS_CHECK(api::percentDecoded(oatpp::String("2026-09-10T04:49:31.000Z")) ==
+             "2026-09-10T04:49:31.000Z");
+}
+
+VS_TEST(a_plus_in_a_query_value_is_not_a_space) {
+    // The obvious "decode a query parameter" also maps '+' to ' ', which is the
+    // form-encoded convention. Doing that here would corrupt the exact values
+    // this decoder exists to rescue: '+' is the sign of a timezone offset, and
+    // "+07:00" would become " 07:00".
+    VS_CHECK(api::percentDecoded(oatpp::String("2026-09-10T11:49:31+07:00")) ==
+             "2026-09-10T11:49:31+07:00");
+    VS_CHECK(api::percentDecoded(oatpp::String("2026-09-10T11%3A49%3A31%2B07%3A00")) ==
+             "2026-09-10T11:49:31+07:00");
+}
+
+VS_TEST(a_broken_escape_is_passed_through_rather_than_swallowed) {
+    // A truncated or invalid escape stays as it is: the value's own parser
+    // gives a better error about the whole string than this could about one
+    // character, and silently dropping the '%' would turn a malformed request
+    // into a plausible-looking wrong one.
+    VS_CHECK(api::percentDecoded(oatpp::String("100%")) == "100%");
+    VS_CHECK(api::percentDecoded(oatpp::String("%zz")) == "%zz");
+    VS_CHECK(api::percentDecoded(oatpp::String("%3")) == "%3");
+    VS_CHECK(api::percentDecoded(oatpp::String()).empty());
+}
+
+
+VS_TEST(an_instant_parameter_accepts_both_forms_the_clients_send) {
+    // The published API has always had two, and the timeline uses both in one
+    // screen: recordings are asked for with ISO instants and a hover thumbnail
+    // with epoch milliseconds. Accepting only one answers 400 to half of it.
+    VS_CHECK(api::parseInstant(oatpp::String("1789014506000")) == 1789014506000LL);
+    VS_CHECK(api::parseInstant(oatpp::String("2026-09-10T03:34:35.293Z")) == 1789011275293LL);
+    // Encoded on the way through the proxy, and still the same instant.
+    VS_CHECK(api::parseInstant(oatpp::String("2026-09-10T03%3A34%3A35.293Z")) ==
+             1789011275293LL);
+}
+
+VS_TEST(an_instant_parameter_rejects_what_is_neither) {
+    // -1 rather than a plausible number, so an endpoint says 400 instead of
+    // quietly serving the wrong day.
+    VS_CHECK(api::parseInstant(oatpp::String("yesterday")) < 0);
+    VS_CHECK(api::parseInstant(oatpp::String("2026-09-10")) < 0);
+    VS_CHECK(api::parseInstant(oatpp::String("12x34")) < 0);
+    // Empty is "not given" — every caller decides what that means for itself.
+    VS_CHECK(api::parseInstant(oatpp::String("")) < 0);
+    VS_CHECK(api::parseInstant(oatpp::String()) < 0);
+    // Digits that overflow are not a timestamp however digit-like they look.
+    VS_CHECK(api::parseInstant(oatpp::String("99999999999999999999999")) < 0);
+}
+
 
 VS_MAIN()

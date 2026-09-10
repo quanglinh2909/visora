@@ -6,6 +6,7 @@
 // with byte ranges, and even that defers the rules to api::parseByteRange. A
 // controller that decides things is a controller nobody can test.
 
+#include <algorithm>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -14,6 +15,7 @@
 
 #include "api/ByteRange.hpp"
 #include "api/HttpError.hpp"
+#include "api/QueryParam.hpp"
 #include "api/mappers/RecordingMapper.hpp"
 #include "core/Time.hpp"
 #include "media/recording/PlaybackService.hpp"
@@ -80,9 +82,9 @@ public:
     }
     ENDPOINT("GET", "/cameras/{id}/recordings/seek", seekRecording, PATH(String, id),
              QUERY(String, at, "at", "")) {
-        const std::int64_t atMs = at && !at->empty() ? core::parseEpochMs(*at)
-                                                     : core::nowEpochMs();
-        if (atMs < 0) abortWith(core::invalidArgument("'at' is not a timestamp: " + *at));
+        const std::string atText = percentDecoded(at);
+        const std::int64_t atMs = atText.empty() ? core::nowEpochMs() : parseInstant(at);
+        if (atMs < 0) abortWith(core::invalidArgument("'at' is not a timestamp: " + atText));
         return createDtoResponse(Status::CODE_200,
                                  toDto(valueOrAbort(m_playback->seek(pathId(id), atMs))));
     }
@@ -135,18 +137,34 @@ public:
         info->addResponse(Status::CODE_500, "text/plain");
         info->addResponse(Status::CODE_503, "text/plain");
     }
+    // 'w' is the published name — the timeline sends it on every hover — and
+    // 'width' is accepted beside it because this port briefly answered only to
+    // that. Neither given, 160 is what a scrub preview wants; asking for 320 and
+    // scaling it down in the browser is a decode and a transfer for nothing.
     ENDPOINT("GET", "/cameras/{id}/thumbnail", getThumbnail, PATH(String, id),
-             QUERY(String, at, "at", ""), QUERY(String, width, "width", "320")) {
+             QUERY(String, at, "at", ""), QUERY(String, w, "w", ""),
+             QUERY(String, width, "width", "")) {
         // 0 means "the most recent", which is what no timestamp asks for.
         std::int64_t atMs = 0;
-        if (at && !at->empty()) {
-            atMs = core::parseEpochMs(*at);
-            if (atMs < 0) abortWith(core::invalidArgument("'at' is not a timestamp: " + *at));
+        const std::string atText = percentDecoded(at);
+        if (!atText.empty()) {
+            atMs = parseInstant(at);
+            if (atMs < 0) abortWith(core::invalidArgument("'at' is not a timestamp: " + atText));
         }
 
+        std::string widthText = percentDecoded(w);
+        if (widthText.empty()) widthText = percentDecoded(width);
+
         media::ThumbnailOptions options;
-        options.width = static_cast<int>(
-            oatpp::utils::conversion::strToInt32(width ? width->c_str() : "320"));
+        if (!widthText.empty()) {
+            options.width =
+                static_cast<int>(oatpp::utils::conversion::strToInt32(widthText.c_str()));
+        }
+        if (options.width <= 0) options.width = kDefaultThumbnailWidth;
+        // Clamped rather than trusted: 'w' comes off a URL, and a scrub preview
+        // that asks for 8000 px makes the board decode and re-encode a frame
+        // nobody can see, once per hover.
+        options.width = std::clamp(options.width, kMinThumbnailWidth, kMaxThumbnailWidth);
 
         const auto jpeg = valueOrAbort(m_playback->thumbnail(pathId(id), atMs, options));
         auto response = createResponse(
@@ -160,6 +178,10 @@ public:
     }
 
 private:
+    static constexpr int kDefaultThumbnailWidth = 160;
+    static constexpr int kMinThumbnailWidth = 48;
+    static constexpr int kMaxThumbnailWidth = 640;
+
     static std::string pathId(const String& id) { return id ? *id : std::string(); }
 
     // A missing 'from' means the last day and a missing 'to' means now. Those
@@ -170,16 +192,22 @@ private:
         constexpr std::int64_t kDayMs = 24LL * 60 * 60 * 1000;
         const std::int64_t nowMs = core::nowEpochMs();
 
+        // Parsed HERE rather than at each endpoint, so every window this
+        // controller serves is decoded and accepts both instant forms, and a
+        // new endpoint cannot forget. See api/QueryParam.hpp.
+        const std::string toText = percentDecoded(to);
+        const std::string fromText = percentDecoded(from);
+
         std::int64_t toMs = nowMs;
-        if (to && !to->empty()) {
-            toMs = core::parseEpochMs(*to);
-            if (toMs < 0) abortWith(core::invalidArgument("'to' is not a timestamp: " + *to));
+        if (!toText.empty()) {
+            toMs = parseInstant(to);
+            if (toMs < 0) abortWith(core::invalidArgument("'to' is not a timestamp: " + toText));
         }
         std::int64_t fromMs = toMs - kDayMs;
-        if (from && !from->empty()) {
-            fromMs = core::parseEpochMs(*from);
+        if (!fromText.empty()) {
+            fromMs = parseInstant(from);
             if (fromMs < 0) {
-                abortWith(core::invalidArgument("'from' is not a timestamp: " + *from));
+                abortWith(core::invalidArgument("'from' is not a timestamp: " + fromText));
             }
         }
         return {fromMs, toMs};
