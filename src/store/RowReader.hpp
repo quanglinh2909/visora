@@ -47,7 +47,12 @@ CellRead tryRetrieve(const oatpp::Any& cell, Wrapper& out) {
     if (!cell) return CellRead::Null;
     try {
         out = cell.retrieve<Wrapper>();
-        return out ? CellRead::Ok : CellRead::Null;
+        // getPtr(), never `out ? ...`. An oatpp wrapper's operator bool returns
+        // the VALUE, so a column holding `false` would read as "not there" —
+        // which is right for the value by luck and wrong for everything else.
+        // It made every false boolean in the database report itself as an
+        // unreadable column.
+        return out.getPtr() != nullptr ? CellRead::Ok : CellRead::Null;
     } catch (const std::runtime_error&) {
         return CellRead::Mismatch;
     }
@@ -70,11 +75,12 @@ public:
 
     bool boolean(std::size_t index) const {
         oatpp::Boolean value;
-        if (at(index, value) != CellRead::Ok) {
-            complainIfMismatch(index, "boolean");
-            return false;
-        }
-        return *value;
+        if (at(index, value) == CellRead::Ok) return *value;
+        // Some drivers hand a boolean back as a one-byte integer.
+        oatpp::Int8 tiny;
+        if (at(index, tiny) == CellRead::Ok) return *tiny != 0;
+        complainIfMismatch(index, "boolean");
+        return false;
     }
 
     int integer(std::size_t index) const {
