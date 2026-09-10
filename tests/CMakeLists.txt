@@ -106,7 +106,7 @@ endif()
 if(VISORA_WITH_API)
     # The HTTP adapter: DTO mapping and error translation. No server, no database.
     add_executable(api_tests api_tests.cpp)
-    target_link_libraries(api_tests PRIVATE visora::api)
+    target_link_libraries(api_tests PRIVATE visora::api visora::backends)
     target_include_directories(api_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME api_tests COMMAND api_tests)
 endif()

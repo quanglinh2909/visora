@@ -1,5 +1,8 @@
 #include "api/mappers/AiMapper.hpp"
 
+#include "vision/ModelType.hpp"
+#include "vision/Transform.hpp"
+
 #include <string>
 
 namespace visora::api {
@@ -158,6 +161,37 @@ vision::AiJobChanges toChanges(const oatpp::Object<AiJobDto>& dto) {
     }
     // id, and the runtime fields, are server-owned and deliberately not taken.
     return changes;
+}
+
+oatpp::Object<AiModelTypesDto> modelTypesDto() {
+    auto entries = oatpp::List<oatpp::Object<AiCatalogEntryDto>>::createShared();
+    auto types = oatpp::List<oatpp::String>::createShared();
+    for (const vision::ModelType* type : vision::modelTypes()) {
+        auto dto = AiCatalogEntryDto::createShared();
+        dto->id = std::string(type->id());
+        dto->value = dto->id;
+        dto->label = std::string(type->label());
+        dto->description = std::string(type->description());
+        entries->push_back(dto);
+        types->push_back(dto->id);
+    }
+    auto out = AiModelTypesDto::createShared();
+    out->types = types;
+    out->entries = entries;
+    return out;
+}
+
+oatpp::List<oatpp::Object<AiCatalogEntryDto>> transformsDto() {
+    auto list = oatpp::List<oatpp::Object<AiCatalogEntryDto>>::createShared();
+    for (const vision::Transform* item : vision::transforms()) {
+        auto dto = AiCatalogEntryDto::createShared();
+        dto->id = std::string(item->id());
+        dto->value = dto->id;
+        dto->label = std::string(item->label());
+        dto->description = std::string(item->description());
+        list->push_back(dto);
+    }
+    return list;
 }
 
 }  // namespace visora::api

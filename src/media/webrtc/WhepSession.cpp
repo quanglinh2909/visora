@@ -96,6 +96,8 @@ struct WhepSession::Impl {
     // whether anyone is still receiving them.
     std::atomic<bool> everConnected{false};
     std::atomic<bool> peerGone{false};
+    // Written once during the offer, read by info() afterwards.
+    std::string clientAddr;
     std::int64_t startedAtMs = 0;
 
     bool transcoded = false;
@@ -313,6 +315,7 @@ core::Result<std::string> WhepSession::start(const std::string& offerSdp,
         return core::hardwareFailure("could not start the WebRTC pipeline");
     }
 
+    m_impl->clientAddr = clientAddressHint;
     auto answer = negotiate(patchedOffer, clientAddressHint);
     if (!answer) {
         stop();
@@ -511,6 +514,8 @@ ViewerInfo WhepSession::info() const {
     out.transcoded = m_impl->transcoded;
     out.rtpPackets = m_impl->rtpPackets.load();
     out.startedAtMs = m_impl->startedAtMs;
+    out.clientAddr = m_impl->clientAddr;
+    out.connected = m_impl->everConnected.load() && !m_impl->peerGone.load();
     return out;
 }
 

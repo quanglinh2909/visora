@@ -29,6 +29,40 @@ class ViewerDto : public oatpp::DTO {
     DTO_FIELD(UInt64, rtpPackets);
 
     DTO_FIELD(String, startedAt);
+
+    DTO_FIELD_INFO(clientAddr) { info->description = "The browser's address, as the server saw it"; }
+    DTO_FIELD(String, clientAddr);
+
+    DTO_FIELD_INFO(mode) { info->description = "'live' for a camera, 'playback' for a recording"; }
+    DTO_FIELD(String, mode);
+
+    DTO_FIELD_INFO(connected) {
+        info->description = "Whether the peer connection actually came up. An offer that "
+                            "never connected is a session too, and looks identical without this.";
+    }
+    DTO_FIELD(Boolean, connected);
+
+    DTO_FIELD_INFO(ageMs) { info->description = "How long this session has been open"; }
+    DTO_FIELD(Int64, ageMs);
+    DTO_FIELD(Int64, ageSeconds);
+};
+
+// The viewers response is an OBJECT, not a bare array.
+//
+// It carries the counts beside the list because that is what a dashboard shows
+// — and because the shape is the predecessor's, which a deployed frontend
+// already parses. Returning the array alone gave that frontend an HTTP 200 it
+// could not read, and a page that crashes on a 200 is worse than one that
+// handles a 404.
+class ViewersDto : public oatpp::DTO {
+    DTO_INIT(ViewersDto, DTO)
+
+    DTO_FIELD(Int64, total);
+    DTO_FIELD_INFO(live) { info->description = "Sessions watching a camera"; }
+    DTO_FIELD(Int64, live);
+    DTO_FIELD_INFO(playback) { info->description = "Sessions watching a recording"; }
+    DTO_FIELD(Int64, playback);
+    DTO_FIELD(List<oatpp::Object<ViewerDto>>, sessions);
 };
 
 class PlaybackControlDto : public oatpp::DTO {

@@ -10,6 +10,8 @@
 // The OPTIONS endpoints exist for CORS preflight: a browser page served from
 // anywhere but this server will not send the POST without them.
 
+#include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -86,9 +88,18 @@ public:
         info->addResponse<oatpp::List<oatpp::Object<ViewerDto>>>(Status::CODE_200,
                                                                  "application/json");
     }
-    ENDPOINT("GET", "/webrtc/viewers", whepViewers) {
+    ENDPOINT("GET", "/webrtc/viewers", whepViewers,
+             QUERY(String, cameraId, "cameraId", "")) {
+        const std::string filter = cameraId ? cameraId->c_str() : "";
         auto list = oatpp::List<oatpp::Object<ViewerDto>>::createShared();
+        const std::int64_t now = core::nowEpochMs();
+        std::int64_t live = 0;
+        std::int64_t playback = 0;
+
         for (const auto& viewer : m_webrtc->viewers()) {
+            if (!filter.empty() && viewer.cameraId != filter) continue;
+            if (viewer.playback) ++playback; else ++live;
+
             auto dto = ViewerDto::createShared();
             dto->sessionId = viewer.sessionId;
             dto->cameraId = viewer.cameraId;
@@ -96,9 +107,22 @@ public:
             dto->transcoded = viewer.transcoded;
             dto->rtpPackets = viewer.rtpPackets;
             dto->startedAt = core::toIso8601(viewer.startedAtMs);
+            dto->clientAddr = viewer.clientAddr;
+            dto->mode = viewer.playback ? "playback" : "live";
+            dto->connected = viewer.connected;
+            const std::int64_t ageMs =
+                viewer.startedAtMs > 0 ? std::max<std::int64_t>(0, now - viewer.startedAtMs) : 0;
+            dto->ageMs = ageMs;
+            dto->ageSeconds = ageMs / 1000;
             list->push_back(dto);
         }
-        return createDtoResponse(Status::CODE_200, list);
+
+        auto out = ViewersDto::createShared();
+        out->total = live + playback;
+        out->live = live;
+        out->playback = playback;
+        out->sessions = list;
+        return createDtoResponse(Status::CODE_200, out);
     }
 
     // --- watching a recording -------------------------------------------------

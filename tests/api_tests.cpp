@@ -8,7 +8,11 @@
 
 #include <string>
 
+#include "oatpp/parser/json/mapping/ObjectMapper.hpp"
+
 #include "api/HttpError.hpp"
+#include "api/dto/WebRtcDto.hpp"
+#include "api/mappers/AiMapper.hpp"
 #include "api/mappers/CameraMapper.hpp"
 #include "api/mappers/StreamStatusMapper.hpp"
 #include "api/ws/CameraStateFeed.hpp"
@@ -83,8 +87,10 @@ VS_TEST(server_owned_fields_cannot_be_set_by_a_client) {
 }
 
 VS_TEST(a_null_dto_maps_to_no_changes_rather_than_crashing) {
-    // An empty body reaches the controller as a null object.
-    const media::CameraChanges changes = api::toChanges(nullptr);
+    // An empty body reaches the controller as a null object. Spelled out
+    // rather than as `nullptr`, which is ambiguous now that AI jobs have a
+    // toChanges of their own.
+    const media::CameraChanges changes = api::toChanges(oatpp::Object<CameraDto>());
     VS_CHECK(!changes.name.has_value());
     VS_CHECK(!changes.rtsp.has_value());
 }
@@ -197,6 +203,98 @@ VS_TEST(an_unchanged_status_is_not_broadcast_twice) {
     // A removal message is distinguishable from a state message.
     const std::string removed = api::CameraStateFeed::removalMessageFor("abc");
     VS_CHECK(removed.find("\"state\":\"removed\"") != std::string::npos);
+}
+
+
+// --- the shapes a separately deployed UI parses --------------------------------
+//
+// These are a CONTRACT, and the way they break is silent. A bare array where
+// the client reads `data.types` gives an empty dropdown and no error anywhere;
+// a bare array where it reads `data.sessions` crashes the page on an HTTP 200,
+// which is worse than a 404 because nothing retries and nothing logs.
+//
+// So the keys are asserted on the serialised JSON, which is what actually
+// crosses the wire — a renamed DTO field passes a compile and fails here.
+
+namespace {
+
+std::string asJson(const oatpp::Void& dto) {
+    oatpp::parser::json::mapping::ObjectMapper mapper;
+    const auto text = mapper.writeToString(dto);
+    return text ? std::string(text->c_str()) : std::string();
+}
+
+bool hasKey(const std::string& json, const std::string& key) {
+    return json.find("\"" + key + "\":") != std::string::npos;
+}
+
+}  // namespace
+
+VS_TEST(the_model_type_catalogue_is_an_object_with_types_in_it) {
+    const std::string json = asJson(api::modelTypesDto());
+    // What the deployed UI reads. A bare array here is an empty dropdown.
+    VS_CHECK(hasKey(json, "types"));
+    VS_CHECK(json.rfind("{", 0) == 0);
+    // Every type appears as a plain string in `types`, not only as an object.
+    VS_CHECK(json.find("\"yolov8_detect\"") != std::string::npos);
+    // And the richer form is still there for anything that wants it.
+    VS_CHECK(hasKey(json, "entries"));
+    VS_CHECK(hasKey(json, "label"));
+}
+
+VS_TEST(a_catalogue_entry_carries_both_id_and_value) {
+    // Two clients, two names for one string. Carrying both is cheaper than a
+    // version negotiation over a dropdown.
+    const std::string json = asJson(api::transformsDto());
+    VS_CHECK(json.rfind("[", 0) == 0);
+    VS_CHECK(hasKey(json, "id"));
+    VS_CHECK(hasKey(json, "value"));
+    VS_CHECK(json.find("\"crop\"") != std::string::npos);
+}
+
+VS_TEST(the_viewers_answer_is_an_object_with_sessions_in_it) {
+    // The one that actually crashed a dashboard: it reads data.sessions, and a
+    // bare array made that undefined AFTER a 200.
+    auto sessions = oatpp::List<oatpp::Object<api::ViewerDto>>::createShared();
+    auto one = api::ViewerDto::createShared();
+    one->sessionId = "s1";
+    one->cameraId = "cam1";
+    one->mode = "live";
+    one->connected = true;
+    one->ageMs = static_cast<v_int64>(1500);
+    one->ageSeconds = static_cast<v_int64>(1);
+    one->clientAddr = "10.0.0.9";
+    sessions->push_back(one);
+
+    auto out = api::ViewersDto::createShared();
+    out->total = static_cast<v_int64>(1);
+    out->live = static_cast<v_int64>(1);
+    out->playback = static_cast<v_int64>(0);
+    out->sessions = sessions;
+
+    const std::string json = asJson(out);
+    VS_CHECK(json.rfind("{", 0) == 0);
+    for (const char* key : {"total", "live", "playback", "sessions"}) {
+        VS_CHECK(hasKey(json, key));
+    }
+    // Per-session fields a viewer list is useless without.
+    for (const char* key : {"sessionId", "cameraId", "mode", "connected", "ageMs",
+                            "ageSeconds", "clientAddr"}) {
+        VS_CHECK(hasKey(json, key));
+    }
+}
+
+VS_TEST(a_model_file_is_named_the_way_the_ui_reads_it) {
+    auto dto = api::AiModelDto::createShared();
+    dto->path = "/models/yolov8n.rknn";
+    dto->name = "yolov8n.rknn";
+    dto->fileName = dto->name;
+    dto->sizeBytes = static_cast<v_uint64>(1234);
+
+    const std::string json = asJson(dto);
+    for (const char* key : {"path", "fileName", "sizeBytes"}) {
+        VS_CHECK(hasKey(json, key));
+    }
 }
 
 VS_MAIN()

@@ -51,6 +51,17 @@ struct ViewerInfo {
     bool transcoded = false;
     std::uint64_t rtpPackets = 0;
     std::int64_t startedAtMs = 0;
+
+    // The browser's address as the HTTP server saw it. What an operator reads
+    // to answer "who is watching this camera".
+    std::string clientAddr;
+    // Whether the peer connection has actually come up. An offer that never
+    // connects is a session too, and it looks identical to a working one
+    // without this.
+    bool connected = false;
+    // Set by WebRtcService: a session watching a recording, not a camera. The
+    // session itself does not know which it is.
+    bool playback = false;
 };
 
 class WhepSession {

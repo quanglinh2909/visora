@@ -192,7 +192,13 @@ std::vector<ViewerInfo> WebRtcService::viewers() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::vector<ViewerInfo> out;
     out.reserve(m_sessions.size());
-    for (const auto& [id, session] : m_sessions) out.push_back(session.whep->info());
+    for (const auto& [id, session] : m_sessions) {
+        ViewerInfo info = session.whep->info();
+        // Only the service knows which kind of session this is: a WhepSession
+        // watching a recording is the same object as one watching a camera.
+        info.playback = session.playback != nullptr;
+        out.push_back(std::move(info));
+    }
     return out;
 }
 

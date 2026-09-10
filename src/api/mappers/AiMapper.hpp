@@ -26,4 +26,12 @@ oatpp::Object<DetectionDto> toDetectionDto(const vision::Detection& detection);
 oatpp::List<oatpp::Object<DetectionDto>> toDetectionDtoList(
     const std::vector<vision::Detection>& detections);
 
+// The catalogues, built here rather than inline in the controller so their
+// SHAPE can be pinned by a test. That shape is a contract with a UI which is
+// deployed separately: reading `data.types` where the answer is a bare array
+// gives an empty dropdown and no error anywhere, and reading `sessions` on an
+// array crashes the page on an HTTP 200.
+oatpp::Object<AiModelTypesDto> modelTypesDto();
+oatpp::List<oatpp::Object<AiCatalogEntryDto>> transformsDto();
+
 }  // namespace visora::api

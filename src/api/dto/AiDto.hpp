@@ -76,8 +76,27 @@ class AiCatalogEntryDto : public oatpp::DTO {
     DTO_INIT(AiCatalogEntryDto, DTO)
 
     DTO_FIELD(String, id);
+    // The same string as `id`, under the name the deployed UI reads it by.
+    // Carrying both is the cheapest way to be right for a client written
+    // against either, and a catalogue entry is not worth a version negotiation.
+    DTO_FIELD(String, value);
     DTO_FIELD(String, label);
     DTO_FIELD(String, description);
+};
+
+// The model types, as an OBJECT with the list under `types`.
+//
+// Not a bare array, because that is the shape the deployed UI parses — it reads
+// `data.types`, and an array gives it `undefined`, an empty dropdown and no
+// error anywhere. `entries` carries the label and description beside it, which
+// a bare list of strings cannot.
+class AiModelTypesDto : public oatpp::DTO {
+    DTO_INIT(AiModelTypesDto, DTO)
+
+    DTO_FIELD_INFO(types) { info->description = "Valid values for a stage's modelType"; }
+    DTO_FIELD(List<String>, types);
+    DTO_FIELD_INFO(entries) { info->description = "The same types, with a label and a description"; }
+    DTO_FIELD(List<oatpp::Object<AiCatalogEntryDto>>, entries);
 };
 
 class AiModelDto : public oatpp::DTO {
@@ -86,6 +105,8 @@ class AiModelDto : public oatpp::DTO {
     DTO_FIELD_INFO(path) { info->description = "Path to pass as a stage's modelPath"; }
     DTO_FIELD(String, path);
     DTO_FIELD(String, name);
+    // The same string as `name`. See AiCatalogEntryDto::value.
+    DTO_FIELD(String, fileName);
     DTO_FIELD_INFO(backend) { info->description = "Which backend would load it, or null"; }
     DTO_FIELD(String, backend);
     DTO_FIELD(UInt64, sizeBytes);

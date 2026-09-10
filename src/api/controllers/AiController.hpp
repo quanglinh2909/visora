@@ -176,19 +176,11 @@ public:
 
     ENDPOINT_INFO(listModelTypes) {
         info->summary = "The model types this build knows how to decode";
-        info->addResponse<oatpp::List<oatpp::Object<AiCatalogEntryDto>>>(Status::CODE_200,
-                                                                          "application/json");
+        info->addResponse<oatpp::Object<AiModelTypesDto>>(Status::CODE_200,
+                                                          "application/json");
     }
     ENDPOINT("GET", "/ai-model-types", listModelTypes) {
-        auto list = oatpp::List<oatpp::Object<AiCatalogEntryDto>>::createShared();
-        for (const vision::ModelType* type : vision::modelTypes()) {
-            auto dto = AiCatalogEntryDto::createShared();
-            dto->id = std::string(type->id());
-            dto->label = std::string(type->label());
-            dto->description = std::string(type->description());
-            list->push_back(dto);
-        }
-        return createDtoResponse(Status::CODE_200, list);
+        return createDtoResponse(Status::CODE_200, modelTypesDto());
     }
 
     ENDPOINT_INFO(listTransforms) {
@@ -197,15 +189,7 @@ public:
                                                                           "application/json");
     }
     ENDPOINT("GET", "/ai-transforms", listTransforms) {
-        auto list = oatpp::List<oatpp::Object<AiCatalogEntryDto>>::createShared();
-        for (const vision::Transform* item : vision::transforms()) {
-            auto dto = AiCatalogEntryDto::createShared();
-            dto->id = std::string(item->id());
-            dto->label = std::string(item->label());
-            dto->description = std::string(item->description());
-            list->push_back(dto);
-        }
-        return createDtoResponse(Status::CODE_200, list);
+        return createDtoResponse(Status::CODE_200, transformsDto());
     }
 
     ENDPOINT_INFO(listModels) {
@@ -227,6 +211,7 @@ public:
             auto dto = AiModelDto::createShared();
             dto->path = entry.path().string();
             dto->name = entry.path().filename().string();
+            dto->fileName = dto->name;
             dto->sizeBytes = static_cast<v_uint64>(entry.file_size(ec));
             // Which backend would take it. Absent means nothing here can, which
             // is exactly what an operator needs to know before choosing it.
