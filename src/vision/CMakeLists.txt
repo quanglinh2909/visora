@@ -28,6 +28,8 @@ add_library(visora_vision_sinks OBJECT
     models/Yolov8Pose.cpp
     models/Yolov8Seg.cpp
     transforms/CropTransform.cpp
+    transforms/FaceAlignTransform.cpp
+    transforms/PlateAlignTransform.cpp
 )
 target_link_libraries(visora_vision_sinks PUBLIC visora::vision)
 target_sources(visora_backends INTERFACE $<TARGET_OBJECTS:visora_vision_sinks>)

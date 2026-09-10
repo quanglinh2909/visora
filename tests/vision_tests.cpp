@@ -905,4 +905,217 @@ VS_TEST(zone_json_that_cannot_be_read_makes_a_camera_quiet_not_noisy) {
     VS_CHECK(vision::parseMotionZones("[]").empty());
 }
 
+// --- alignment transforms ----------------------------------------------------
+
+namespace {
+
+// The canonical ArcFace landmark positions for a 112x112 crop: the published
+// 96x112 numbers with the horizontal centring every reference implementation
+// applies. Written out here rather than shared with the transform on purpose —
+// a test that imports the constant it is checking proves nothing.
+constexpr float kCanonX[5] = {38.2946f, 73.5318f, 56.0252f, 41.5493f, 70.7299f};
+constexpr float kCanonY[5] = {51.6963f, 51.5014f, 71.7366f, 92.3655f, 92.2041f};
+
+// Five distinguishable colours, one per landmark, so the check is "landmark 3
+// arrived at position 3" and not merely "something bright arrived".
+constexpr std::uint8_t kDotColour[5][3] = {
+    {255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 0}, {0, 255, 255},
+};
+
+struct FaceScene {
+    core::OwnedImage frame;
+    std::vector<float> keypoints;  // flat (x, y, score), frame coordinates
+    core::Rect box;
+};
+
+// Paints a synthetic face: the canonical landmarks rotated by `degrees`, scaled
+// and moved into a blank frame, each marked with its own colour. Aligning this
+// must undo exactly that rotation.
+FaceScene paintFace(float degrees, float scale, float originX, float originY) {
+    constexpr int kFrameSide = 480;
+    constexpr int kDotRadius = 4;
+
+    FaceScene scene;
+    scene.frame.reset(core::PixelFormat::RGB888, core::Size{kFrameSide, kFrameSide});
+    scene.frame.fill(0);
+
+    const float radians = degrees * 3.14159265f / 180.0f;
+    const float cosine = std::cos(radians) * scale;
+    const float sine = std::sin(radians) * scale;
+
+    float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
+    core::MutableImageView view = scene.frame.view();
+    for (int i = 0; i < 5; ++i) {
+        const float x = originX + cosine * kCanonX[i] - sine * kCanonY[i];
+        const float y = originY + sine * kCanonX[i] + cosine * kCanonY[i];
+        scene.keypoints.push_back(x);
+        scene.keypoints.push_back(y);
+        scene.keypoints.push_back(0.9f);
+        minX = std::min(minX, x); maxX = std::max(maxX, x);
+        minY = std::min(minY, y); maxY = std::max(maxY, y);
+
+        for (int dy = -kDotRadius; dy <= kDotRadius; ++dy) {
+            for (int dx = -kDotRadius; dx <= kDotRadius; ++dx) {
+                const int px = static_cast<int>(x) + dx;
+                const int py = static_cast<int>(y) + dy;
+                if (px < 0 || py < 0 || px >= kFrameSide || py >= kFrameSide) continue;
+                std::uint8_t* pixel = view.data +
+                                      static_cast<std::size_t>(py) * view.planes[0].stride +
+                                      static_cast<std::size_t>(px) * 3;
+                pixel[0] = kDotColour[i][0];
+                pixel[1] = kDotColour[i][1];
+                pixel[2] = kDotColour[i][2];
+            }
+        }
+    }
+
+    // The box a face detector would report: the landmarks with a little around
+    // them, which is less than the canonical square reaches.
+    scene.box = core::Rect{static_cast<int>(minX) - 10, static_cast<int>(minY) - 10,
+                           static_cast<int>(maxX - minX) + 20,
+                           static_cast<int>(maxY - minY) + 20};
+    return scene;
+}
+
+// Runs one transform over a scene and hands back the 112x112 RGB result.
+core::OwnedImage alignFace(const FaceScene& scene, vision::TransformContext* seen = nullptr) {
+    vision::TransformContext context;
+    context.source = scene.frame.view();
+    context.box = scene.box;
+    context.keypoints = &scene.keypoints;
+    context.target = core::Size{112, 112};
+
+    core::OwnedImage out(core::PixelFormat::RGB888, context.target);
+    core::MutableImageView view = out.view();
+    const core::Status applied = vision::transform("align_face")->apply(context, view);
+    if (!applied.ok()) return core::OwnedImage{};
+    if (seen != nullptr) *seen = context;
+    return out;
+}
+
+const std::uint8_t* pixelAt(const core::OwnedImage& image, int x, int y) {
+    return image.data() + static_cast<std::size_t>(y) * image.size().width * 3 +
+           static_cast<std::size_t>(x) * 3;
+}
+
+// Which of the five colours a pixel is closest to, or -1 when it is nearer to
+// the black background than to any of them.
+int nearestDot(const std::uint8_t* pixel) {
+    int best = -1;
+    int bestDistance = 3 * 128 * 128;  // must beat "closer to black than to a dot"
+    for (int i = 0; i < 5; ++i) {
+        int distance = 0;
+        for (int c = 0; c < 3; ++c) {
+            const int delta = static_cast<int>(pixel[c]) - static_cast<int>(kDotColour[i][c]);
+            distance += delta * delta;
+        }
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            best = i;
+        }
+    }
+    return best;
+}
+
+}  // namespace
+
+VS_TEST(the_alignment_transforms_the_stored_jobs_name_are_registered) {
+    // Live jobs on the board carry these two ids. Before they existed here,
+    // every such job failed validation with "unknown transform" — the job would
+    // not start, and the REST call that saved it returned 400.
+    VS_CHECK(vision::transform("align_face") != nullptr);
+    VS_CHECK(vision::transform("align_plate") != nullptr);
+
+    bool face = false;
+    bool plate = false;
+    for (const vision::Transform* item : vision::transforms()) {
+        if (item->id() == "align_face") face = true;
+        if (item->id() == "align_plate") plate = true;
+    }
+    VS_CHECK(face && plate);
+}
+
+VS_TEST(face_alignment_puts_the_landmarks_where_the_recogniser_expects_them) {
+    // The whole contract of this transform: after it runs, the left eye is at
+    // the canonical left-eye position, and so on. A rotated, scaled, offset
+    // face goes in; the canonical layout comes out.
+    const FaceScene scene = paintFace(/*degrees=*/22.0f, /*scale=*/1.7f, 150.0f, 120.0f);
+    const core::OwnedImage aligned = alignFace(scene);
+    VS_CHECK(!aligned.empty());
+
+    for (int i = 0; i < 5; ++i) {
+        const int x = static_cast<int>(kCanonX[i] + 0.5f);
+        const int y = static_cast<int>(kCanonY[i] + 0.5f);
+        // Landmark i, and not one of the other four: a transform that mirrored
+        // the face or swapped the eyes would still land colour ON a landmark.
+        VS_CHECK_EQ(nearestDot(pixelAt(aligned, x, y)), i);
+    }
+}
+
+VS_TEST(face_alignment_removes_the_pose_rather_than_merely_cropping) {
+    // The same face at two rotations must produce the SAME aligned image. This
+    // is what the embedding model is promised and what a plain crop cannot do:
+    // crop the two and they differ by the rotation.
+    const core::OwnedImage upright = alignFace(paintFace(0.0f, 1.7f, 150.0f, 150.0f));
+    const core::OwnedImage tilted = alignFace(paintFace(35.0f, 1.2f, 190.0f, 90.0f));
+    VS_CHECK(!upright.empty() && !tilted.empty());
+    VS_CHECK_EQ(upright.byteCount(), tilted.byteCount());
+
+    double total = 0;
+    for (std::size_t i = 0; i < upright.byteCount(); ++i) {
+        total += std::abs(static_cast<int>(upright.data()[i]) -
+                          static_cast<int>(tilted.data()[i]));
+    }
+    const double meanDifference = total / static_cast<double>(upright.byteCount());
+    // Not zero: two different rotations resample different pixels, so dot edges
+    // differ. Small, because everything else is made to coincide.
+    VS_CHECK(meanDifference < 6.0);
+}
+
+VS_TEST(face_alignment_declines_a_detection_with_no_landmarks) {
+    // Unsupported means SKIP THIS DETECTION, not "the job failed" — a box
+    // detector used by mistake, or a face too small to resolve joints on,
+    // must not take down the rest of the frame.
+    FaceScene scene = paintFace(0.0f, 1.7f, 150.0f, 150.0f);
+    scene.keypoints.clear();
+
+    vision::TransformContext context;
+    context.source = scene.frame.view();
+    context.box = scene.box;
+    context.keypoints = &scene.keypoints;
+    context.target = core::Size{112, 112};
+
+    core::OwnedImage out(core::PixelFormat::RGB888, context.target);
+    core::MutableImageView view = out.view();
+    const core::Status applied = vision::transform("align_face")->apply(context, view);
+    VS_CHECK(!applied.ok());
+    VS_CHECK(applied.error().code == core::ErrorCode::Unsupported);
+}
+
+VS_TEST(plate_alignment_crops_tight_where_the_plain_crop_pads) {
+    // The one thing that separates them, and the reason align_plate is not just
+    // an alias: context padding shrinks the characters inside a fixed model
+    // input, which is the margin on a distant plate.
+    core::OwnedImage frame(core::PixelFormat::RGB888, core::Size{640, 480});
+    frame.fill(80);
+    const core::Rect box{200, 200, 120, 40};
+
+    auto coveredBy = [&](const char* id) {
+        vision::TransformContext context;
+        context.source = frame.view();
+        context.box = box;
+        context.target = core::Size{192, 48};
+        core::OwnedImage out(core::PixelFormat::RGB888, context.target);
+        core::MutableImageView view = out.view();
+        VS_CHECK(vision::transform(id)->apply(context, view).ok());
+        return context.covered;
+    };
+
+    const core::Rect tight = coveredBy("align_plate");
+    const core::Rect padded = coveredBy("crop");
+    VS_CHECK(tight == box);
+    VS_CHECK(padded.width > box.width && padded.height > box.height);
+}
+
+
 VS_MAIN()
