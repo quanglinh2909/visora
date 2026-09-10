@@ -175,14 +175,14 @@ private:
         }
 
         if (dictionary.empty()) {
-            VS_WARN(kCategory) << "ppocr_rec: no dictionary beside " << modelPath
+            VS_WARN(kCategory) << "paddle_ocr_rec: no dictionary beside " << modelPath
                                << " — results carry class ids but no text";
         } else {
             // The trailing space class exists only when the model was trained
             // with use_space_char. Appending it either way is harmless: a class
             // id past the end simply yields no text.
             dictionary.push_back(" ");
-            VS_INFO(kCategory) << "ppocr_rec: " << dictionary.size() << " characters from "
+            VS_INFO(kCategory) << "paddle_ocr_rec: " << dictionary.size() << " characters from "
                                << sidecar;
         }
         return m_dictionaries.emplace(modelPath, std::move(dictionary)).first->second;
