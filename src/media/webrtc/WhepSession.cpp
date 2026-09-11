@@ -1,5 +1,7 @@
 #include "media/webrtc/WhepSession.hpp"
 
+#include "media/source/BackPressure.hpp"
+
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -83,6 +85,9 @@ struct WhepSession::Impl {
     std::mutex mutex;
     bool enabled = false;
     bool capsSet = false;
+    // Guarded by `mutex`, like everything else the push path touches.
+    DropUntilKeyframe gate;
+    std::string sessionId;
 
     // ICE gathering, signalled from webrtcbin's notify callback.
     std::mutex gatherMutex;
@@ -119,6 +124,21 @@ void WhepSession::Impl::push(GstBuffer* buffer, GstCaps* caps) {
 
     // A shallow copy, because the buffer is shared with every other consumer of
     // this source and appsrc is about to write a timestamp onto it.
+    // A viewer whose connection cannot carry the stream must not be able to
+    // grow this pipeline's queue without bound. Once behind, nothing is sent
+    // until a keyframe: the frames in between could not be decoded anyway.
+    const std::uint64_t queued =
+        gst_app_src_get_current_level_bytes(GST_APP_SRC(appsrc));
+    const bool keyframe = !GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
+    if (!gate.admit(keyframe, queued > kMaxQueuedBytes)) {
+        if (gate.dropped() % 100 == 1) {
+            VS_WARN(kCategory) << sessionId << ": viewer is behind, " << queued / 1024
+                               << " KiB queued; dropping until the next keyframe ("
+                               << gate.dropped() << " so far)";
+        }
+        return;
+    }
+
     GstBuffer* out = gst_buffer_make_writable(gst_buffer_ref(buffer));
     // Cleared so do-timestamp=true applies THIS pipeline's clock. The source's
     // PTS comes from a different clock; left in place, the payloader computes
@@ -322,6 +342,7 @@ core::Result<std::string> WhepSession::start(const std::string& offerSdp,
         return answer.error();
     }
 
+    m_impl->sessionId = m_sessionId;
     m_impl->startedAtMs = core::nowEpochMs();
     {
         std::lock_guard<std::mutex> lock(m_impl->mutex);

@@ -14,6 +14,7 @@
 
 #include <gst/gst.h>
 
+#include "media/source/BackPressure.hpp"
 #include "media/source/IdleRetirement.hpp"
 #include "media/source/SinkFanout.hpp"
 
@@ -296,6 +297,57 @@ VS_TEST(a_zero_grace_period_is_the_old_behaviour_and_does_not_cost_a_sweep) {
     // the next one.
     media::IdleTimer timer(std::chrono::milliseconds::zero());
     VS_CHECK(timer.expired(false, media::IdleTimer::Clock::now()));
+}
+
+
+// --- what happens to a consumer that cannot keep up ---------------------------
+
+VS_TEST(a_consumer_that_is_keeping_up_is_never_dropped) {
+    media::DropUntilKeyframe gate;
+    for (int i = 0; i < 1000; ++i) VS_CHECK(gate.admit(i % 50 == 0, /*overflowing=*/false));
+    VS_CHECK_EQ(gate.dropped(), static_cast<std::uint64_t>(0));
+}
+
+VS_TEST(once_behind_nothing_is_sent_until_the_next_keyframe) {
+    // The point. Sending the frames after a drop costs the bandwidth that was
+    // already short, to deliver pictures the decoder cannot use: their
+    // references went with the dropped frames.
+    media::DropUntilKeyframe gate;
+    VS_CHECK(gate.admit(/*keyframe=*/false, /*overflowing=*/true) == false);
+    VS_CHECK(gate.waiting());
+
+    // Room again, but mid-GOP — still nothing, because there is nothing here a
+    // decoder could start from.
+    VS_CHECK(gate.admit(false, false) == false);
+    VS_CHECK(gate.admit(false, false) == false);
+    VS_CHECK(gate.waiting());
+
+    // A keyframe is a clean place to resume.
+    VS_CHECK(gate.admit(true, false) == true);
+    VS_CHECK(!gate.waiting());
+    VS_CHECK(gate.admit(false, false) == true);
+}
+
+VS_TEST(a_keyframe_arriving_while_still_full_is_refused) {
+    // The case that turns "behind" into "out of memory": a keyframe is the
+    // largest frame there is, and admitting it into a queue that is already
+    // over its bound is how a slow viewer takes the process with it.
+    media::DropUntilKeyframe gate;
+    VS_CHECK(gate.admit(/*keyframe=*/true, /*overflowing=*/true) == false);
+    VS_CHECK(gate.waiting());
+    VS_CHECK(gate.admit(true, false) == true);
+}
+
+VS_TEST(every_dropped_frame_is_counted) {
+    // So "the picture is choppy" can be answered with a number rather than a
+    // guess.
+    media::DropUntilKeyframe gate;
+    gate.admit(false, true);
+    gate.admit(false, false);
+    gate.admit(false, false);
+    VS_CHECK_EQ(gate.dropped(), static_cast<std::uint64_t>(3));
+    VS_CHECK(gate.admit(true, false));
+    VS_CHECK_EQ(gate.dropped(), static_cast<std::uint64_t>(3));
 }
 
 

@@ -1,5 +1,7 @@
 #include "media/moq/MoqFeed.hpp"
 
+#include "media/source/BackPressure.hpp"
+
 #include <cerrno>
 #include <cstring>
 
@@ -65,6 +67,11 @@ struct MoqFeed::Wire {
     // What is left of ONE frame that was written partially. Never more than
     // one: a new frame is only begun when this is empty.
     std::vector<std::uint8_t> pending;
+    // After a drop, nothing is sent until a keyframe. The frames in between
+    // reference pictures the reader never got, so they decode to tearing and
+    // cost exactly the bandwidth that was already short. Both reference servers
+    // drop a whole GOP for this reason.
+    DropUntilKeyframe gate;
 
     // Pushes whatever is left of the partial frame. False when the connection
     // has died.
@@ -94,18 +101,19 @@ void MoqFeed::Wire::push(GstBuffer* buffer) {
     if (fd < 0 || !alive.load()) return;
 
     if (!flushPending()) return;
-    if (!pending.empty()) {
-        // The tail of the previous frame has not gone yet. Drop this one whole:
-        // a frame cannot be sent partially and abandoned, because the reader
-        // would lose frame alignment for the rest of the session.
+
+    // The tail of the previous frame has not gone yet, so this one cannot be
+    // begun: a frame sent partially and abandoned loses the reader its frame
+    // alignment for the rest of the session.
+    const bool behind = !pending.empty();
+    const bool keyframe = !GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
+    if (!gate.admit(keyframe, behind)) {
         dropped.fetch_add(1);
         return;
     }
 
     GstMapInfo map;
     if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) return;
-
-    const bool keyframe = !GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
     const std::uint64_t ptsUs =
         GST_BUFFER_PTS_IS_VALID(buffer) ? GST_BUFFER_PTS(buffer) / 1000 : 0;
     const auto header =

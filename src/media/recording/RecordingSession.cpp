@@ -1,5 +1,7 @@
 #include "media/recording/RecordingSession.hpp"
 
+#include "media/source/BackPressure.hpp"
+
 #include <algorithm>
 #include <condition_variable>
 #include <filesystem>
@@ -36,6 +38,9 @@ struct RecordingSession::Impl {
     std::mutex mutex;
     bool enabled = false;
     bool capsSet = false;
+    // Guarded by `mutex`, like everything else on the push path.
+    DropUntilKeyframe gate;
+    std::string cameraId;
 
     // Set by the bus watcher when the pipeline finishes draining. A promise
     // rather than a second reader of the bus: stop() used to pop the bus itself
@@ -63,6 +68,20 @@ void RecordingSession::Impl::push(GstBuffer* buffer, GstCaps* caps) {
     if (!capsSet && caps) {
         gst_app_src_set_caps(GST_APP_SRC(appsrc), caps);
         capsSet = true;
+    }
+
+    // A disk that cannot keep up must cost bounded memory rather than the
+    // process. Given a lot of room first — see kMaxRecordingQueuedBytes — since
+    // a gap in a recording is worse than a gap in a live view.
+    const std::uint64_t queued = gst_app_src_get_current_level_bytes(GST_APP_SRC(appsrc));
+    const bool keyframe = !GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
+    if (!gate.admit(keyframe, queued > kMaxRecordingQueuedBytes)) {
+        if (gate.dropped() % 100 == 1) {
+            VS_WARN(kCategory) << cameraId << ": recording cannot keep up with the disk, "
+                               << queued / (1024 * 1024) << " MiB queued; dropping until the "
+                               << "next keyframe (" << gate.dropped() << " so far)";
+        }
+        return;
     }
 
     // A shallow copy, because the buffer is shared with every other consumer of
@@ -221,6 +240,7 @@ core::Status RecordingSession::start() {
     // in a non-playing pipeline queue up and the first segment starts late.
     m_impl->sinkId = m_source->addSink(
         [impl = m_impl.get()](GstBuffer* buffer, GstCaps* caps) { impl->push(buffer, caps); });
+    m_impl->cameraId = m_cameraId;
     m_impl->running = true;
 
     VS_INFO(kCategory) << m_cameraId << ": recording to " << m_options.recordingDir << " ("
