@@ -191,7 +191,7 @@ std::size_t CameraSourceRegistry::lingeringCount() const {
 }
 
 core::Result<std::shared_ptr<EncodedSource>> CameraSourceRegistry::acquireH264(
-    const std::string& cameraId, const std::string& rtspUrl, Codec codec) {
+    const std::string& cameraId, const std::string& rtspUrl, Codec codec, int bitrateKbps) {
     auto raw = acquire(cameraId, rtspUrl, codec);
     if (!raw) return raw;
     if (raw.value()->codec() == Codec::H264) return raw;
@@ -201,10 +201,12 @@ core::Result<std::shared_ptr<EncodedSource>> CameraSourceRegistry::acquireH264(
         // Alive and reading the source this camera has now. A transcode left
         // over from a camera that has been repointed is transcoding the wrong
         // stream, so it is replaced rather than reused.
-        if (held->second.source->alive()) {
+        if (held->second.source->alive() && held->second.bitrateKbps == bitrateKbps) {
             held->second.idle.expired(/*hasConsumers=*/true, IdleTimer::Clock::now());
             return std::static_pointer_cast<EncodedSource>(held->second.source);
         }
+        // Dropped, not stopped: existing viewers keep the transcode they have
+        // until they let go, and new ones get one built to the new setting.
         m_transcodes.erase(held);
     }
 
@@ -213,10 +215,14 @@ core::Result<std::shared_ptr<EncodedSource>> CameraSourceRegistry::acquireH264(
     // for the re-encode would be a setting that only half applies.
     TranscodeOptions transcodeOptions;
     transcodeOptions.gopCache = m_options.gopCache;
-    // Live measurement first; it is the truth when it exists. Otherwise what
-    // this camera measured last time, which is far closer to the truth than the
-    // encoder's estimate from resolution alone.
-    if (raw.value()->bitrateBps() == 0) {
+    // An explicit per-camera setting wins over both: it exists precisely to say
+    // "send this one smaller than it arrives", which following the source
+    // cannot express.
+    if (bitrateKbps > 0) {
+        transcodeOptions.bitrateKbps = bitrateKbps;
+        VS_INFO(kCategory) << cameraId << ": encoding at " << bitrateKbps
+                           << " kbps, set on the camera";
+    } else if (raw.value()->bitrateBps() == 0) {
         if (const std::uint64_t remembered = m_bitrates->recall(cameraId); remembered > 0) {
             transcodeOptions.bitrateKbps = static_cast<int>(remembered / 1000);
             VS_INFO(kCategory) << cameraId << ": encoding at " << transcodeOptions.bitrateKbps
@@ -229,6 +235,7 @@ core::Result<std::shared_ptr<EncodedSource>> CameraSourceRegistry::acquireH264(
     Transcode held;
     held.source = transcode;
     held.idle = IdleTimer(m_options.idleLinger);
+    held.bitrateKbps = bitrateKbps;
     m_transcodes[cameraId] = std::move(held);
     return std::static_pointer_cast<EncodedSource>(transcode);
 }

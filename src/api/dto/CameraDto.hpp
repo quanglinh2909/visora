@@ -67,6 +67,13 @@ class CameraDto : public oatpp::DTO {
     DTO_FIELD_INFO(segmentSeconds) { info->description = "Recording segment duration in seconds"; }
     DTO_FIELD(Int32, segmentSeconds);
 
+    DTO_FIELD_INFO(streamBitrateKbps) {
+        info->description =
+            "Re-encode bitrate for browser viewers, kbit/s. 0 follows the camera's own "
+            "bitrate. Only applies to cameras that are transcoded, which today means H.265.";
+    }
+    DTO_FIELD(Int32, streamBitrateKbps);
+
     DTO_FIELD_INFO(motionKeyframeOnly) {
         info->description = "Analyse only keyframes in the motion branch";
     }

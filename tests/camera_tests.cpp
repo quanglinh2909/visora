@@ -353,4 +353,40 @@ VS_TEST(choosing_a_recording_mode_keeps_the_older_boolean_in_step) {
     if (conflicting.ok()) VS_CHECK(!conflicting.value().recordingEnabled);
 }
 
+VS_TEST(a_cameras_stream_bitrate_defaults_to_following_the_camera) {
+    // Zero is not "no bitrate", it is "whatever this camera sends" — which is
+    // right almost always, and better than any number somebody types, because
+    // it tracks the camera when the camera is reconfigured.
+    media::Camera camera;
+    VS_CHECK_EQ(camera.streamBitrateKbps, 0);
+}
+
+VS_TEST(a_stream_bitrate_survives_a_round_trip_through_changes) {
+    // The field exists to be set when the VIEWER's link is the constraint
+    // rather than the camera's: a 4 Mbps camera watched over a phone connection
+    // is a stall whatever the camera thinks.
+    media::CameraChanges changes;
+    changes.streamBitrateKbps = 1200;
+    VS_CHECK(changes.streamBitrateKbps.has_value());
+    VS_CHECK_EQ(*changes.streamBitrateKbps, 1200);
+}
+
+
+VS_TEST(setting_a_stream_bitrate_actually_reaches_the_camera) {
+    // It did not, the first time: the field was added to the DTO, the mapper,
+    // the schema and the encoder, and the one line that copies it onto the
+    // camera was missed. The API answered 200 and changed nothing.
+    media::Camera camera;
+    media::CameraChanges changes;
+    changes.streamBitrateKbps = 900;
+
+    const media::CameraDiff diff = media::apply(changes, camera);
+    VS_CHECK_EQ(camera.streamBitrateKbps, 900);
+    // And it must NOT restart the stream: it changes what a browser viewer is
+    // re-encoded at, not what the camera is pulled at.
+    VS_CHECK(!diff.sourceChanged);
+    VS_CHECK(!diff.recordingChanged);
+}
+
+
 VS_MAIN()

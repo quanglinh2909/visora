@@ -51,6 +51,16 @@ core::Status validateForUpdate(const CameraChanges& changes) {
         (*changes.segmentSeconds < 1 || *changes.segmentSeconds > 3600)) {
         return core::invalidArgument("segmentSeconds must be between 1 and 3600");
     }
+    // Zero means "follow the camera". Anything else has to be a rate an encoder
+    // can actually be asked for: below 64 kbit/s there is no picture worth
+    // sending, and above 20 Mbit/s the setting is a typo rather than a choice.
+    if (changes.streamBitrateKbps.has_value() &&
+        (*changes.streamBitrateKbps < 0 ||
+         (*changes.streamBitrateKbps > 0 && *changes.streamBitrateKbps < 64) ||
+         *changes.streamBitrateKbps > 20000)) {
+        return core::invalidArgument(
+            "streamBitrateKbps must be 0 (follow the camera) or between 64 and 20000");
+    }
     if (changes.preMotionSeconds.has_value() &&
         (*changes.preMotionSeconds < 0 || *changes.preMotionSeconds > 300)) {
         return core::invalidArgument("preMotionSeconds must be between 0 and 300");

@@ -41,6 +41,7 @@ oatpp::Object<CameraDto> toDto(const media::Camera& camera) {
     dto->preMotionSeconds = camera.preMotionSeconds;
     dto->postMotionSeconds = camera.postMotionSeconds;
     dto->segmentSeconds = camera.segmentSeconds;
+    dto->streamBitrateKbps = camera.streamBitrateKbps;
     dto->motionKeyframeOnly = camera.motionKeyframeOnly;
     dto->motionGridX = camera.motionGridX;
     dto->motionGridY = camera.motionGridY;
@@ -77,6 +78,7 @@ media::CameraChanges toChanges(const oatpp::Object<CameraDto>& dto) {
     take(dto->preMotionSeconds, changes.preMotionSeconds);
     take(dto->postMotionSeconds, changes.postMotionSeconds);
     take(dto->segmentSeconds, changes.segmentSeconds);
+    take(dto->streamBitrateKbps, changes.streamBitrateKbps);
     take(dto->motionKeyframeOnly, changes.motionKeyframeOnly);
     take(dto->motionGridX, changes.motionGridX);
     take(dto->motionGridY, changes.motionGridY);

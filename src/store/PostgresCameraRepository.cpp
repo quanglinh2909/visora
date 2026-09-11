@@ -33,7 +33,7 @@ constexpr const char* kColumns =
     "motion_threshold, pre_motion_seconds, post_motion_seconds, segment_seconds, "
     "motion_keyframe_only, motion_grid_x, motion_grid_y, motion_cell_levels, "
     "motion_zones, motion_save_events, retention_days, "
-    "retry_count, last_error, last_changed_at";
+    "retry_count, last_error, last_changed_at, stream_bitrate_kbps";
 
 std::string text(const oatpp::String& value) { return value ? *value : std::string(); }
 
@@ -71,6 +71,7 @@ media::Camera readRow(const oatpp::Vector<oatpp::Any>& row) {
     camera.retryCount = integer(23);
     camera.lastError = str(24);
     camera.lastChangedAt = str(25);
+    camera.streamBitrateKbps = integer(26);
     return camera;
 }
 
@@ -136,13 +137,13 @@ core::Result<media::Camera> PostgresCameraRepository::insert(const media::Camera
             "recording_mode, motion_enabled, motion_sensitivity, motion_threshold, "
             "pre_motion_seconds, post_motion_seconds, segment_seconds, motion_keyframe_only, "
             "motion_grid_x, motion_grid_y, motion_cell_levels, motion_zones, "
-            "motion_save_events, retention_days) "
+            "motion_save_events, retention_days, stream_bitrate_kbps) "
             "VALUES (:name, :rtsp, :input_rtsp, :hardware, :recording_enabled, "
             ":recording_mode, :motion_enabled, :motion_sensitivity, :motion_threshold, "
             ":pre_motion_seconds, :post_motion_seconds, :segment_seconds, "
             ":motion_keyframe_only, :motion_grid_x, :motion_grid_y, "
             ":motion_cell_levels, :motion_zones, :motion_save_events, "
-            ":retention_days) RETURNING ") +
+            ":retention_days, :stream_bitrate_kbps) RETURNING ") +
             kColumns,
         {
             {"name", oatpp::String(camera.name.c_str())},
@@ -157,6 +158,7 @@ core::Result<media::Camera> PostgresCameraRepository::insert(const media::Camera
             {"pre_motion_seconds", oatpp::Int32(camera.preMotionSeconds)},
             {"post_motion_seconds", oatpp::Int32(camera.postMotionSeconds)},
             {"segment_seconds", oatpp::Int32(camera.segmentSeconds)},
+            {"stream_bitrate_kbps", oatpp::Int32(camera.streamBitrateKbps)},
             {"motion_keyframe_only", oatpp::Boolean(camera.motionKeyframeOnly)},
             {"motion_grid_x", oatpp::Int32(camera.motionGridX)},
             {"motion_grid_y", oatpp::Int32(camera.motionGridY)},
@@ -189,7 +191,8 @@ core::Result<media::Camera> PostgresCameraRepository::update(const media::Camera
                     "motion_cell_levels = :motion_cell_levels, "
                     "motion_zones = :motion_zones, "
                     "motion_save_events = :motion_save_events, "
-                    "retention_days = :retention_days "
+                    "retention_days = :retention_days, "
+                    "stream_bitrate_kbps = :stream_bitrate_kbps "
                     "WHERE id = CAST(:id AS UUID) RETURNING ") +
             kColumns,
         {
@@ -206,6 +209,7 @@ core::Result<media::Camera> PostgresCameraRepository::update(const media::Camera
             {"pre_motion_seconds", oatpp::Int32(camera.preMotionSeconds)},
             {"post_motion_seconds", oatpp::Int32(camera.postMotionSeconds)},
             {"segment_seconds", oatpp::Int32(camera.segmentSeconds)},
+            {"stream_bitrate_kbps", oatpp::Int32(camera.streamBitrateKbps)},
             {"motion_keyframe_only", oatpp::Boolean(camera.motionKeyframeOnly)},
             {"motion_grid_x", oatpp::Int32(camera.motionGridX)},
             {"motion_grid_y", oatpp::Int32(camera.motionGridY)},

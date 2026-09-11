@@ -109,3 +109,9 @@ CREATE TABLE IF NOT EXISTS ai_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_jobs_camera ON ai_jobs(camera_id);
 CREATE INDEX IF NOT EXISTS idx_ai_jobs_enabled ON ai_jobs(enabled);
+
+-- Per-camera transcode bitrate for browser viewers, in kbit/s. 0 follows what
+-- the camera itself sends, which is right unless the VIEWER's link is the
+-- constraint rather than the camera's. Added after the first deployments, so
+-- idempotently.
+ALTER TABLE cameras ADD COLUMN IF NOT EXISTS stream_bitrate_kbps INTEGER NOT NULL DEFAULT 0;

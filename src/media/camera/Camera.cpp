@@ -92,6 +92,13 @@ CameraDiff apply(const CameraChanges& changes, Camera& camera) {
     }
     if (assign(changes.segmentSeconds, camera.segmentSeconds)) diff.recordingChanged = true;
 
+    // No diff flag on purpose. This changes what a BROWSER viewer is re-encoded
+    // at, not what the camera is pulled at, so restarting the stream would cost
+    // every consumer a reconnect to fix something none of them are affected by.
+    // The registry builds the next transcode at the new rate; viewers already
+    // watching keep the one they have until they let go of it.
+    assign(changes.streamBitrateKbps, camera.streamBitrateKbps);
+
     if (assign(changes.motionEnabled, camera.motionEnabled)) diff.motionChanged = true;
     if (assign(changes.motionSensitivity, camera.motionSensitivity)) diff.motionChanged = true;
     if (assign(changes.motionThreshold, camera.motionThreshold)) diff.motionChanged = true;

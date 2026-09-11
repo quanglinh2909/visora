@@ -60,9 +60,13 @@ public:
     // doing it once per viewer is what makes a board fall over at four of them.
     // An H.264 camera is handed back unchanged — building a decode/encode pass
     // to convert H.264 to H.264 would be the most expensive no-op there is.
+    // `bitrateKbps` is the camera's own setting: zero follows what the camera
+    // sends, which is right unless the VIEWER's link is the constraint. It is
+    // passed in rather than looked up because this layer knows about streams,
+    // not about the database rows that configure them.
     core::Result<std::shared_ptr<EncodedSource>> acquireH264(const std::string& cameraId,
                                                             const std::string& rtspUrl,
-                                                            Codec codec);
+                                                            Codec codec, int bitrateKbps = 0);
 
     // How many cameras currently have a live source. For diagnostics — a number
     // that does not match the number of streaming cameras means something is
@@ -89,6 +93,10 @@ private:
     struct Transcode {
         std::shared_ptr<TranscodedSource> source;
         IdleTimer idle{std::chrono::milliseconds::zero()};
+        // What it was built for. A transcode running at the old setting is not
+        // the one being asked for, so changing the setting replaces it rather
+        // than being ignored until the next restart.
+        int bitrateKbps = 0;
     };
 
     void sweep();

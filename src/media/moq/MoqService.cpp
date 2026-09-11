@@ -123,7 +123,8 @@ core::Result<MoqFeedInfo> MoqService::open(const MoqFeedRequest& request) {
         // That reads as a broken stream and is really a codec nobody
         // translated. Shared per camera, so a dozen viewers cost one transcode.
         auto live = m_sources->acquireH264(request.cameraId, camera.value().inputRtsp,
-                                           camera.value().codec);
+                                           camera.value().codec,
+                                           camera.value().streamBitrateKbps);
         if (!live) return live.error();
         source = live.value();
     }

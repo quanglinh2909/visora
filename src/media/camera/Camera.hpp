@@ -60,6 +60,15 @@ struct Camera {
     int postMotionSeconds = 20;
     int segmentSeconds = 10;
 
+    // What to re-encode this camera at for browsers, in kbit/s. Zero follows
+    // what the camera itself sends, which is right almost always — see
+    // CameraSourceRegistry. Set it when the viewer's link is the constraint
+    // rather than the camera's: a 4 Mbps camera watched over a phone connection
+    // is a stall, whatever the camera thinks.
+    //
+    // Only affects cameras that are transcoded at all, which today means H.265.
+    int streamBitrateKbps = 0;
+
     // Analyse only keyframes in the motion branch. Cuts decode cost enormously
     // on a busy board, at the price of coarser timing.
     bool motionKeyframeOnly = false;
@@ -104,6 +113,7 @@ struct CameraChanges {
     std::optional<int> preMotionSeconds;
     std::optional<int> postMotionSeconds;
     std::optional<int> segmentSeconds;
+    std::optional<int> streamBitrateKbps;
     std::optional<bool> motionKeyframeOnly;
     std::optional<int> motionGridX;
     std::optional<int> motionGridY;
