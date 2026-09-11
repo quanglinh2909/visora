@@ -9,6 +9,7 @@
 // Nothing then stated what the program was made of, and a unit test of one
 // service had to construct all of them.
 
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -189,6 +190,8 @@ int main(int argc, char** argv) {
         media::RtspSourceOptions sourceOptions;
         sourceOptions.latencyMs = config.value().stream.sourceLatencyMs;
         sourceOptions.gopCache.enabled = config.value().stream.gopCache;
+        sourceOptions.idleLinger =
+            std::chrono::milliseconds(config.value().stream.sourceIdleLingerMs);
         auto sources = std::make_shared<media::CameraSourceRegistry>(sourceOptions);
 
         auto recordingRepository = repositories.recordings;

@@ -8,11 +8,13 @@
 #include "TestHarness.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <thread>
 #include <vector>
 
 #include <gst/gst.h>
 
+#include "media/source/IdleRetirement.hpp"
 #include "media/source/SinkFanout.hpp"
 
 using namespace visora;
@@ -247,6 +249,55 @@ VS_TEST(a_consumer_joining_while_frames_flow_still_sees_them_in_order) {
     // frame delivered ahead of the GOP it depends on.
     for (std::size_t i = 1; i < seen.size(); ++i) VS_CHECK(seen[i] > seen[i - 1]);
 }
+
+// --- the grace period before an unwatched stream is let go -------------------
+
+VS_TEST(a_watched_stream_is_never_retired) {
+    media::IdleTimer timer(std::chrono::milliseconds(5000));
+    auto now = media::IdleTimer::Clock::now();
+    for (int i = 0; i < 100; ++i) {
+        now += std::chrono::seconds(60);
+        VS_CHECK(!timer.expired(/*hasConsumers=*/true, now));
+    }
+    VS_CHECK(!timer.idle());
+}
+
+VS_TEST(an_unwatched_stream_is_kept_for_the_grace_period_and_then_let_go) {
+    // The point of the whole thing: a page reload takes a second or two, and
+    // paying a full RTSP re-handshake for it is what this avoids.
+    media::IdleTimer timer(std::chrono::milliseconds(5000));
+    const auto start = media::IdleTimer::Clock::now();
+
+    VS_CHECK(!timer.expired(false, start));
+    VS_CHECK(timer.idle());
+    VS_CHECK(!timer.expired(false, start + std::chrono::milliseconds(4999)));
+    VS_CHECK(timer.expired(false, start + std::chrono::milliseconds(5000)));
+}
+
+VS_TEST(a_viewer_returning_within_the_window_keeps_the_stream_running) {
+    media::IdleTimer timer(std::chrono::milliseconds(5000));
+    const auto start = media::IdleTimer::Clock::now();
+
+    VS_CHECK(!timer.expired(false, start));
+    // Back before the window ran out.
+    VS_CHECK(!timer.expired(true, start + std::chrono::milliseconds(3000)));
+    VS_CHECK(!timer.idle());
+    // And the clock starts again from there, not from the first departure —
+    // otherwise a reload would leave the stream on a countdown it never
+    // cancelled.
+    VS_CHECK(!timer.expired(false, start + std::chrono::milliseconds(4000)));
+    VS_CHECK(!timer.expired(false, start + std::chrono::milliseconds(8000)));
+    VS_CHECK(timer.expired(false, start + std::chrono::milliseconds(9000)));
+}
+
+VS_TEST(a_zero_grace_period_is_the_old_behaviour_and_does_not_cost_a_sweep) {
+    // Deployments with many cameras and few viewers may want the stream gone
+    // the moment nobody is watching. That must happen on the same sweep, not
+    // the next one.
+    media::IdleTimer timer(std::chrono::milliseconds::zero());
+    VS_CHECK(timer.expired(false, media::IdleTimer::Clock::now()));
+}
+
 
 int main() {
     gst_init(nullptr, nullptr);

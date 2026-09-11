@@ -59,6 +59,10 @@ public:
     void stop();
 
     std::uint64_t addSink(Sink sink, SinkOptions options = {}) override;
+
+    // How many consumers this transcode has. Zero means nobody is watching it,
+    // which is what decides when it is retired.
+    std::size_t sinkCount() const;
     void removeSink(std::uint64_t id) override;
     bool alive() const override;
     Codec codec() const override { return Codec::H264; }

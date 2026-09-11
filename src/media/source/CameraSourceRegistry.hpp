@@ -8,16 +8,32 @@
 // simultaneous sessions a camera permits — Dahua and Hikvision units cap this,
 // so it is a constraint rather than an optimisation.
 //
-// Held weakly: the last consumer letting go destroys the source, which closes
-// the connection to the camera. Nothing has to remember to release it.
+// Held by the registry, not by the last consumer.
+//
+// It used to be weak: the last consumer letting go destroyed the source and
+// closed the connection to the camera, and nothing had to remember to release
+// it. That is right for a board running seventeen cameras and wrong for the
+// thing people do most — reloading the page cost a full RTSP re-handshake for a
+// viewer who never really left.
+//
+// So a source outlives its last consumer by a grace period and a sweeper
+// retires it after that, which is what `streamNoneReaderDelayMS` does in
+// ZLMediaKit and what the publish timeouts do in SRS. Whether anything is
+// consuming is asked of the SOURCE — its sink count — rather than tracked here,
+// because that is the fact itself rather than a copy of it.
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include "core/Result.hpp"
+#include "media/source/IdleRetirement.hpp"
 #include "media/source/RtspEncodedSource.hpp"
 #include "media/source/TranscodedSource.hpp"
 
@@ -26,6 +42,10 @@ namespace visora::media {
 class CameraSourceRegistry {
 public:
     explicit CameraSourceRegistry(RtspSourceOptions options = {});
+    ~CameraSourceRegistry();
+
+    CameraSourceRegistry(const CameraSourceRegistry&) = delete;
+    CameraSourceRegistry& operator=(const CameraSourceRegistry&) = delete;
 
     // The camera's source, started, creating it if nobody holds one. A source
     // whose URL or codec no longer matches is replaced rather than reused: it
@@ -49,19 +69,42 @@ public:
     // holding a source it should have let go of.
     std::size_t liveCount() const;
 
+    // Sources held only by the grace period — running, with nobody watching.
+    // For diagnostics: a number that stays high means the grace period is too
+    // long for how this deployment is used.
+    std::size_t lingeringCount() const;
+
+    // Runs one sweep now instead of waiting for the timer. Only for tests: it
+    // makes the grace period assertable without sleeping through it.
+    void sweepNow();
+
 private:
     struct Entry {
-        std::weak_ptr<RtspEncodedSource> source;
+        std::shared_ptr<RtspEncodedSource> source;
         std::string rtspUrl;
         Codec codec = Codec::Unknown;
+        IdleTimer idle{std::chrono::milliseconds::zero()};
     };
+
+    struct Transcode {
+        std::shared_ptr<TranscodedSource> source;
+        IdleTimer idle{std::chrono::milliseconds::zero()};
+    };
+
+    void sweep();
+    void runSweeper();
 
     RtspSourceOptions m_options;
     mutable std::mutex m_mutex;
     std::map<std::string, Entry> m_entries;
-    // Held weakly like the raw sources: the last consumer letting go tears the
-    // transcode down, and nothing has to remember to.
-    std::map<std::string, std::weak_ptr<TranscodedSource>> m_transcodes;
+    // Held the same way as the raw sources, and swept first: a transcode counts
+    // as a consumer of its upstream, so the upstream cannot go idle until the
+    // transcode has gone.
+    std::map<std::string, Transcode> m_transcodes;
+
+    std::condition_variable m_wake;
+    std::atomic<bool> m_stopping{false};
+    std::thread m_sweeper;
 
     // The last bitrate measured for each camera, remembered ACROSS source
     // lifetimes.

@@ -163,6 +163,7 @@ core::Result<Config> loadConfig(const std::string& path) {
         readInt(*stream, "retryMaxMs", config.stream.retryMaxMs);
         readInt(*stream, "sourceLatencyMs", config.stream.sourceLatencyMs);
         readBool(*stream, "gopCache", config.stream.gopCache);
+        readInt(*stream, "sourceIdleLingerMs", config.stream.sourceIdleLingerMs);
         readString(*stream, "recordingDir", config.stream.recordingDir);
         readString(*stream, "motionSnapshotDir", config.stream.motionSnapshotDir);
         readString(*stream, "stunServer", config.stream.stunServer);

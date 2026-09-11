@@ -42,6 +42,17 @@ struct StreamConfig {
     // latency, which is the tradeoff SRS names in one line: "set to off for min
     // delay".
     bool gopCache = true;
+
+    // How long a camera's stream is kept running after the last viewer leaves.
+    //
+    // Zero closes it at once, which is what this did and what suits a board
+    // with many cameras and few viewers. A few seconds covers a page reload,
+    // which otherwise pays a full RTSP re-handshake — 300 to 800 ms here — for
+    // a viewer who never really left. ZLMediaKit calls this
+    // streamNoneReaderDelayMS and defaults it to 20 seconds; 10 is chosen here
+    // because an unwatched camera on this board still costs a connection, a
+    // jitterbuffer and a parser.
+    int sourceIdleLingerMs = 10000;
     std::string recordingDir = "recordings";
     std::string motionSnapshotDir = "motion-snapshots";
 

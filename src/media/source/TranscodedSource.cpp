@@ -348,6 +348,8 @@ std::uint64_t TranscodedSource::addSink(Sink sink, SinkOptions options) {
 
 void TranscodedSource::removeSink(std::uint64_t id) { m_impl->fanout.remove(id); }
 
+std::size_t TranscodedSource::sinkCount() const { return m_impl->fanout.size(); }
+
 // Dead when either end is: a transcode of a source that has gone is not a
 // stream, it is a pipeline waiting for buffers that will not arrive.
 bool TranscodedSource::alive() const {

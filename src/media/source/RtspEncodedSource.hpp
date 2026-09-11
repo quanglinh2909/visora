@@ -8,6 +8,7 @@
 // different between them; the jitterbuffer, depayloader and parser happen once.
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -27,6 +28,13 @@ struct RtspSourceOptions {
     // What a new consumer is started with. On by default: a live wall is judged
     // on whether the picture appears. See SinkFanout.hpp for what it costs.
     GopCacheLimits gopCache;
+
+    // How long a source is kept running after the last consumer lets go.
+    //
+    // Zero is the old behaviour: gone at once. A few seconds covers the thing
+    // people do most — reload the page — which otherwise costs a full RTSP
+    // re-handshake for a viewer who never really left. See IdleRetirement.hpp.
+    std::chrono::milliseconds idleLinger{10000};
 
     // Called from the STREAMING THREAD when the measured bitrate is first
     // available and periodically after, so whoever manages sources can remember
