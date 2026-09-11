@@ -52,49 +52,67 @@ comment about why; the measurement simply did not exist yet at the one moment a
 transcode is built. A source now reports its rate and the registry remembers it
 per camera across source lifetimes.
 
+### A grace period before an unwatched stream is let go — done
+
+`streamNoneReaderDelayMS` in ZLMediaKit, the publish timeouts in SRS. Releasing
+a source the instant the last consumer let go meant a page reload paid a full
+RTSP re-handshake for a viewer who never really left.
+
+The registry now holds its sources and a sweeper retires the ones nobody is
+consuming, after `gstreamer.sourceIdleLingerMs` (default 10 s; ZLMediaKit
+defaults to 20, but an unwatched camera here still costs a connection, a
+jitterbuffer and a parser). Measured on the board, time to first frame: 2.11 s
+cold, 1.02 s reopening within the window, 2.10 s again once it has expired.
+
+### A drop policy for a consumer that cannot keep up — done
+
+SRS bounds each consumer's queue and drops "the old whole gop"; ZLMediaKit's
+keyed ring does the same by construction. Both appsrcs here were `max-bytes=0`,
+unbounded, and the MoQ feed — which did drop when its socket filled — resumed
+mid-GOP, so the reader got frames whose references it never received.
+
+`DropUntilKeyframe` states the rule once and the WHEP viewer, the MoQ feed and
+the recorder use it. The bound differs because the trade does: a viewer that
+falls behind has a slow network and will stay behind, so 4 MB and drop early; a
+recorder falls behind because the disk stalled, and a hole in a recording is
+worse than a hole in a live view, so 32 MB.
+
+### Timestamp sanitising — done
+
+ZLMediaKit's `Stamp` (MAX_DELTA_STAMP three seconds) and SRS's `time_jitter
+full`. Visora had been caught twice by not having this. Corrected once at the
+source now, before the fan-out, so each consumer stops rebasing for itself.
+
+Two details that are easy to get wrong and are asserted: it corrects by OFFSET,
+which preserves the PTS-to-DTS gap that carries display order, and it watches
+DTS rather than PTS, because PTS legitimately steps backward between consecutive
+buffers on any stream with B-frames.
+
+### Encoder settings per camera — done
+
+`streamBitrateKbps` on the camera, zero meaning "follow the camera". Following
+the source is right almost always and cannot express the one thing this is for:
+send this camera SMALLER than it arrives, because the VIEWER's link is the
+constraint. Backend only — the frontend needs the field added to its camera form
+before an operator can set it without curl.
+
 ## Worth taking, not yet done
 
-### A delay before tearing down an unwatched stream
+### RF-DETR
 
-`streamNoneReaderDelayMS` and `continue_push_ms` in ZLMediaKit, the publish
-timeouts in SRS. Visora tears a camera source down the moment the last consumer
-releases it, which is right for a board with seventeen cameras and wrong for the
-thing people do most: reload the page. That costs a full RTSP re-handshake, 300
-to 800 ms, for a viewer who never really left.
+Not a lesson from either reference — it is the one model type of the
+predecessor's that is still unported, and the reason is structural. It is a
+hybrid: the CNN backbone converts to an NPU graph, the transformer head has to
+run on ONNX Runtime taking the backbone's feature map as input. Every other type
+turns tensors into detections; this one needs to run a second model ON tensors,
+and `hal::Model::run` takes an image.
 
-Not a large change, but not a trivial one either: the registry hands out
-`shared_ptr` and learns nothing when the last one is dropped, so a grace period
-means a custom deleter that returns the source to a timed holding list, and a
-sweeper to retire it. **This is the next thing to do.**
-
-### A drop policy for a consumer that cannot keep up
-
-SRS bounds each consumer's queue in SECONDS and drops a whole GOP when it
-overflows — `queue_length`, default 30 — which is the right unit, because
-dropping a partial GOP leaves a decoder with references it cannot use.
-
-Visora calls sinks synchronously on the streaming thread. The pushes are into
-non-blocking appsrcs, so the exposure is bounded today, but there is no policy:
-nothing says what happens when a consumer is persistently slower than the
-camera. Worth having before anything is put in front of a slow network.
-
-### Timestamp sanitising
-
-ZLMediaKit's `Stamp` rebuilds a monotonic timeline from a source that jumps or
-rolls over, with `MAX_DELTA_STAMP` at 3 seconds — "mainly to prevent network
-jitter caused by the jump". SRS has `time_jitter full` for the same reason.
-
-Visora leans on GStreamer plus its own rebasing, and has been caught twice: the
-transcode output starting at 3,600,000 s, and PTS handling in the restream. A
-small explicit sanitiser at the source boundary would make those a class of bug
-that cannot recur rather than two that were fixed.
-
-### Encoder settings per camera
-
-Both expose the encode: bitrate, size, fps, codec. Visora's transcode now
-follows the source, which is better than a typed number for the common case, but
-there is no way to say "send this camera to browsers at 1 Mbps" — useful when the
-viewer is on a phone. This is a schema, API and UI change, not a media change.
+Doable: the board already has the four model pairs and a vendored ONNX Runtime
+1.22 under the predecessor's third_party. It needs a tensors-in entry point on
+the inference port, an ONNX backend registered like the RKNN one, and the head
+loaded beside the backbone the way PP-OCR already loads its dictionary. It also
+needs ONNX Runtime as an optional dependency, which cannot be built or tested on
+a development machine of a different architecture — only on the board.
 
 ## Deliberately not taken
 
@@ -111,3 +129,12 @@ viewer is on a phone. This is a schema, API and UI change, not a media change.
   step back here, not forward.
 * **`mergeWriteMS` / `mw_latency` write coalescing.** A throughput optimisation
   for thousands of connections. At this scale it would trade latency for nothing.
+* **Routing small AI crops through the hardware scaler.** `core::expandToMin`
+  exists to grow a crop until a fixed-function scaler will accept it, and the
+  crops that need it are face and plate boxes of 30 to 50 pixels. Left on the
+  software path deliberately: a resize of a 30x40 source costs tens of
+  microseconds against the 185 to 490 ms of NPU inference that follows it, so
+  there is nothing measurable to win, and growing the box changes what a
+  tight-crop model is shown — which is an accuracy change, not a speed one. It
+  IS used where it earns its place: face alignment, where the warp reads by
+  landmark position and a larger crop only turns black pixels into real ones.
