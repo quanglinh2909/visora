@@ -33,7 +33,15 @@ core::Result<std::shared_ptr<EncodedSource>> CameraSourceRegistry::acquire(
         }
     }
 
-    auto source = std::make_shared<RtspEncodedSource>(cameraId, rtspUrl, codec, m_options);
+    // Each source reports its measured bitrate into the shared memory, so the
+    // NEXT transcode of this camera knows what it sends even though nothing is
+    // running yet when that transcode is built.
+    RtspSourceOptions options = m_options;
+    options.onBitrate = [memory = m_bitrates, cameraId](std::uint64_t bps) {
+        if (bps > 0) memory->remember(cameraId, bps);
+    };
+
+    auto source = std::make_shared<RtspEncodedSource>(cameraId, rtspUrl, codec, options);
     const core::Status started = source->start();
     if (!started.ok()) return started.error();
 
@@ -69,6 +77,16 @@ core::Result<std::shared_ptr<EncodedSource>> CameraSourceRegistry::acquireH264(
     // for the re-encode would be a setting that only half applies.
     TranscodeOptions transcodeOptions;
     transcodeOptions.gopCache = m_options.gopCache;
+    // Live measurement first; it is the truth when it exists. Otherwise what
+    // this camera measured last time, which is far closer to the truth than the
+    // encoder's estimate from resolution alone.
+    if (raw.value()->bitrateBps() == 0) {
+        if (const std::uint64_t remembered = m_bitrates->recall(cameraId); remembered > 0) {
+            transcodeOptions.bitrateKbps = static_cast<int>(remembered / 1000);
+            VS_INFO(kCategory) << cameraId << ": encoding at " << transcodeOptions.bitrateKbps
+                               << " kbps, remembered from this camera's last run";
+        }
+    }
     auto transcode = std::make_shared<TranscodedSource>(cameraId, raw.value(), transcodeOptions);
     const core::Status started = transcode->start();
     if (!started.ok()) return started.error();

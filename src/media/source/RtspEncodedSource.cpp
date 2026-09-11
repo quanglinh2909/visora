@@ -32,6 +32,11 @@ constexpr int kAppsinkMaxBuffers = 30;
 // that re-encodes needs a number BEFORE the first viewer arrives.
 constexpr gint64 kBitrateWarmupUs = 2 * G_USEC_PER_SEC;
 
+// How often the measured bitrate is reported out after the first time. A
+// camera's rate barely moves, so this only has to be often enough that a
+// re-pointed or reconfigured camera is noticed within a shift.
+constexpr gint64 kBitrateReportEveryUs = 60 * G_USEC_PER_SEC;
+
 }  // namespace
 
 struct RtspEncodedSource::Impl {
@@ -48,6 +53,7 @@ struct RtspEncodedSource::Impl {
     // because consumers read it from theirs.
     std::uint64_t rateBytes = 0;
     gint64 rateSinceUs = 0;
+    gint64 reportedAtUs = 0;
 
     SinkFanout fanout;
 
@@ -119,8 +125,18 @@ void RtspEncodedSource::Impl::deliver(GstSample* sample) {
     if (rateSinceUs == 0) {
         rateSinceUs = nowUs;
     } else if (nowUs - rateSinceUs >= kBitrateWarmupUs) {
-        bitrateBps.store(rateBytes * 8 * G_USEC_PER_SEC /
-                         static_cast<std::uint64_t>(nowUs - rateSinceUs));
+        const std::uint64_t estimate =
+            rateBytes * 8 * G_USEC_PER_SEC / static_cast<std::uint64_t>(nowUs - rateSinceUs);
+        bitrateBps.store(estimate);
+        // Report it out, at first measurement and occasionally after. Not every
+        // frame: this is on the delivery path for every consumer of this
+        // camera, and a lock per frame to update a number that moves by a few
+        // per cent an hour would be a poor trade.
+        if (owner != nullptr && owner->m_options.onBitrate &&
+            (reportedAtUs == 0 || nowUs - reportedAtUs >= kBitrateReportEveryUs)) {
+            reportedAtUs = nowUs;
+            owner->m_options.onBitrate(estimate);
+        }
     }
 
     fanout.deliver(buffer, caps, keyframe);

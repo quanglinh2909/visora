@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -26,6 +27,14 @@ struct RtspSourceOptions {
     // What a new consumer is started with. On by default: a live wall is judged
     // on whether the picture appears. See SinkFanout.hpp for what it costs.
     GopCacheLimits gopCache;
+
+    // Called from the STREAMING THREAD when the measured bitrate is first
+    // available and periodically after, so whoever manages sources can remember
+    // what a camera sends. Must not block; it is on the delivery path.
+    //
+    // Pushed rather than polled because the one moment a transcode needs this
+    // number is the moment a source is created, when there is nothing to poll.
+    std::function<void(std::uint64_t bitrateBps)> onBitrate;
 
     // TCP by default, and it is not a preference.
     //

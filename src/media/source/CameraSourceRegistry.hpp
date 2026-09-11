@@ -11,6 +11,7 @@
 // Held weakly: the last consumer letting go destroys the source, which closes
 // the connection to the camera. Nothing has to remember to release it.
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -61,6 +62,40 @@ private:
     // Held weakly like the raw sources: the last consumer letting go tears the
     // transcode down, and nothing has to remember to.
     std::map<std::string, std::weak_ptr<TranscodedSource>> m_transcodes;
+
+    // The last bitrate measured for each camera, remembered ACROSS source
+    // lifetimes.
+    //
+    // Held behind a shared_ptr with its own lock because a source reports into
+    // it from its streaming thread, and a source can outlive this registry
+    // during shutdown.
+    //
+    // A transcode is built the moment the first viewer asks for one, which is
+    // the same moment the camera source is created — so there is nothing to
+    // measure yet and the encoder is left to guess. Its guess is width x height
+    // x fps / 8, about 6.5 Mbps for 1080p, against cameras on this deployment
+    // that send 790 kbps. Observed alternating in one log: the same camera
+    // transcoded at "786 kbps" when a recorder had the source already running
+    // and at "encoder default" when it had not.
+    //
+    // A camera's bitrate is a property of the CAMERA, not of one connection to
+    // it, so remembering it is what makes the first viewer's stream as cheap as
+    // the second's.
+    struct BitrateMemory {
+        std::mutex mutex;
+        std::map<std::string, std::uint64_t> byCamera;
+
+        void remember(const std::string& cameraId, std::uint64_t bps) {
+            std::lock_guard<std::mutex> lock(mutex);
+            byCamera[cameraId] = bps;
+        }
+        std::uint64_t recall(const std::string& cameraId) const {
+            std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex));
+            const auto it = byCamera.find(cameraId);
+            return it == byCamera.end() ? 0 : it->second;
+        }
+    };
+    std::shared_ptr<BitrateMemory> m_bitrates = std::make_shared<BitrateMemory>();
 };
 
 }  // namespace visora::media
