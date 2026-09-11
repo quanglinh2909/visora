@@ -98,7 +98,9 @@ public:
     //
     // Sinks are invoked OUTSIDE the lock: a sink pushes into another pipeline's
     // appsrc, and holding the lock across that would let one slow consumer
-    // block another consumer's remove().
+    // block another consumer's remove(). This is the steady-state path and the
+    // reason that matters; add() primes under the lock instead, where the burst
+    // is bounded and the alternative was a race — see its comment.
     void deliver(GstBuffer* buffer, GstCaps* caps, bool keyframe);
 
     // Drops the cache and every consumer. For a source that has stopped.
@@ -122,18 +124,11 @@ private:
         // prime. The behaviour this class replaces, kept for the analyser and
         // as the fallback whenever the cache cannot serve.
         bool waitingForKeyframe = true;
-        // Being handed the cached GOP right now. Live frames that arrive during
-        // that go to `pending` so the consumer never sees them out of order.
-        bool priming = false;
-        std::vector<Frame> pending;
     };
 
     static Frame retain(GstBuffer* buffer, GstCaps* caps);
     static void release(Frame& frame);
     static void releaseAll(std::vector<Frame>& frames);
-
-    // Sends and releases. Takes ownership of the frames it is given.
-    static void sendAndRelease(const EncodedSource::Sink& sink, std::vector<Frame>& frames);
 
     void dropGop();
 
