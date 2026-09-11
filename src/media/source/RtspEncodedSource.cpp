@@ -1,5 +1,7 @@
 #include "media/source/RtspEncodedSource.hpp"
 
+#include "media/source/SinkFanout.hpp"
+
 #include <algorithm>
 #include <vector>
 
@@ -33,12 +35,7 @@ constexpr gint64 kBitrateWarmupUs = 2 * G_USEC_PER_SEC;
 }  // namespace
 
 struct RtspEncodedSource::Impl {
-    struct Consumer {
-        Sink sink;
-        // Every consumer starts at a keyframe. Handed a P-frame first, a
-        // decoder reconstructs it against references it never received.
-        bool waitingForKeyframe = true;
-    };
+    Impl(GopCacheLimits limits, std::string tag) : fanout(limits, std::move(tag)) {}
 
     RtspEncodedSource* owner = nullptr;
     GstElement* pipeline = nullptr;
@@ -52,9 +49,7 @@ struct RtspEncodedSource::Impl {
     std::uint64_t rateBytes = 0;
     gint64 rateSinceUs = 0;
 
-    mutable std::mutex mutex;
-    std::map<std::uint64_t, Consumer> consumers;
-    std::uint64_t nextId = 1;
+    SinkFanout fanout;
 
     void deliver(GstSample* sample);
 };
@@ -128,22 +123,7 @@ void RtspEncodedSource::Impl::deliver(GstSample* sample) {
                          static_cast<std::uint64_t>(nowUs - rateSinceUs));
     }
 
-    // Collect under the lock, call outside it. A sink pushes into another
-    // pipeline's appsrc, and holding this source's lock across that would let
-    // one slow consumer block another consumer's removeSink.
-    std::vector<Sink> targets;
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        targets.reserve(consumers.size());
-        for (auto& [id, consumer] : consumers) {
-            if (consumer.waitingForKeyframe) {
-                if (!keyframe) continue;
-                consumer.waitingForKeyframe = false;
-            }
-            targets.push_back(consumer.sink);
-        }
-    }
-    for (const Sink& sink : targets) sink(buffer, caps);
+    fanout.deliver(buffer, caps, keyframe);
 }
 
 RtspEncodedSource::RtspEncodedSource(std::string cameraId, std::string rtspUrl, Codec codec,
@@ -152,7 +132,7 @@ RtspEncodedSource::RtspEncodedSource(std::string cameraId, std::string rtspUrl, 
       m_rtspUrl(std::move(rtspUrl)),
       m_codec(codec),
       m_options(std::move(options)),
-      m_impl(std::make_unique<Impl>()) {
+      m_impl(std::make_unique<Impl>(m_options.gopCache, m_cameraId)) {
     m_impl->owner = this;
 }
 
@@ -254,25 +234,18 @@ void RtspEncodedSource::stop() {
     }
 }
 
-std::uint64_t RtspEncodedSource::addSink(Sink sink) {
-    std::lock_guard<std::mutex> lock(m_impl->mutex);
-    const std::uint64_t id = m_impl->nextId++;
-    m_impl->consumers.emplace(id, Impl::Consumer{std::move(sink), true});
-    return id;
+std::uint64_t RtspEncodedSource::addSink(Sink sink, SinkOptions options) {
+    return m_impl->fanout.add(std::move(sink), options);
 }
 
-void RtspEncodedSource::removeSink(std::uint64_t id) {
-    std::lock_guard<std::mutex> lock(m_impl->mutex);
-    m_impl->consumers.erase(id);
-}
+void RtspEncodedSource::removeSink(std::uint64_t id) { m_impl->fanout.remove(id); }
 
 bool RtspEncodedSource::alive() const { return m_impl->alive.load(); }
 
 std::uint64_t RtspEncodedSource::bitrateBps() const { return m_impl->bitrateBps.load(); }
 
 std::size_t RtspEncodedSource::sinkCount() const {
-    std::lock_guard<std::mutex> lock(m_impl->mutex);
-    return m_impl->consumers.size();
+    return m_impl->fanout.size();
 }
 
 }  // namespace visora::media

@@ -77,7 +77,7 @@ public:
     PlaybackState state() const;
 
     // --- EncodedSource -------------------------------------------------------
-    std::uint64_t addSink(Sink sink) override;
+    std::uint64_t addSink(Sink sink, SinkOptions options = {}) override;
     void removeSink(std::uint64_t id) override;
     bool alive() const override;
     Codec codec() const override { return m_codec; }

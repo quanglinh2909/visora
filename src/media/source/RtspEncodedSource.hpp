@@ -16,11 +16,16 @@
 
 #include "core/Result.hpp"
 #include "media/source/EncodedSource.hpp"
+#include "media/source/SinkFanout.hpp"
 
 namespace visora::media {
 
 struct RtspSourceOptions {
     int latencyMs = 300;
+
+    // What a new consumer is started with. On by default: a live wall is judged
+    // on whether the picture appears. See SinkFanout.hpp for what it costs.
+    GopCacheLimits gopCache;
 
     // TCP by default, and it is not a preference.
     //
@@ -54,7 +59,7 @@ public:
     core::Status start();
     void stop();
 
-    std::uint64_t addSink(Sink sink) override;
+    std::uint64_t addSink(Sink sink, SinkOptions options = {}) override;
     void removeSink(std::uint64_t id) override;
     bool alive() const override;
     Codec codec() const override { return m_codec; }

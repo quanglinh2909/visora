@@ -30,6 +30,18 @@ typedef struct _GstCaps GstCaps;
 
 namespace visora::media {
 
+// How a consumer wants to be started.
+struct SinkOptions {
+    // Hand this consumer the frames since the last keyframe before it joins the
+    // live stream, so it has a picture immediately instead of waiting for the
+    // next one. See media/source/SinkFanout.hpp for what that costs.
+    //
+    // True for anything a person watches. False for the analyser: it samples a
+    // few frames a second on purpose, and replaying a GOP into it is decode and
+    // inference work spent on a moment that has already passed.
+    bool primeFromGop = true;
+};
+
 class EncodedSource {
 public:
     // The buffer and caps are BORROWED: a consumer that wants to keep either
@@ -39,11 +51,15 @@ public:
 
     virtual ~EncodedSource() = default;
 
-    // Returns an id for removeSink. A new consumer starts receiving at the NEXT
-    // KEYFRAME: handed a P-frame first, a decoder reconstructs it against
-    // reference frames it never saw and produces visible garbage until the next
-    // IDR — seconds of it, on a camera with a long GOP.
-    virtual std::uint64_t addSink(Sink sink) = 0;
+    // Returns an id for removeSink.
+    //
+    // A consumer must start at a KEYFRAME: handed a P-frame first, a decoder
+    // reconstructs it against reference frames it never saw and produces
+    // visible garbage. A live source keeps the current GOP so that keyframe is
+    // available at once (SinkFanout); one that cannot simply starts the
+    // consumer at the next keyframe, which on these cameras is a one to two
+    // second wait.
+    virtual std::uint64_t addSink(Sink sink, SinkOptions options = {}) = 0;
     virtual void removeSink(std::uint64_t id) = 0;
 
     // False once the source has failed or ended. A consumer should stop rather

@@ -130,7 +130,7 @@ PlaybackState PlaybackSource::state() const {
     return out;
 }
 
-std::uint64_t PlaybackSource::addSink(Sink sink) {
+std::uint64_t PlaybackSource::addSink(Sink sink, SinkOptions /*options*/) {
     std::lock_guard<std::mutex> lock(m_impl->sinkMutex);
     const std::uint64_t id = m_impl->nextSinkId++;
     m_impl->sinks.emplace(id, std::move(sink));

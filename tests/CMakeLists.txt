@@ -110,3 +110,10 @@ if(VISORA_WITH_API)
     target_include_directories(api_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME api_tests COMMAND api_tests)
 endif()
+
+# The GOP cache and consumer fan-out. Real GstBuffers, because reference
+# ownership is half of what is being tested — but no pipeline, no camera.
+add_executable(fanout_tests fanout_tests.cpp)
+target_link_libraries(fanout_tests PRIVATE visora::media visora::backends)
+target_include_directories(fanout_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME fanout_tests COMMAND fanout_tests)

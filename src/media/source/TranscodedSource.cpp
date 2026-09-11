@@ -1,5 +1,7 @@
 #include "media/source/TranscodedSource.hpp"
 
+#include "media/source/SinkFanout.hpp"
+
 #include <algorithm>
 #include <utility>
 #include <vector>
@@ -29,10 +31,7 @@ constexpr gint64 kBitrateWarmupUs = 2 * G_USEC_PER_SEC;
 }  // namespace
 
 struct TranscodedSource::Impl {
-    struct Consumer {
-        Sink sink;
-        bool waitingForKeyframe = true;
-    };
+    Impl(GopCacheLimits limits, std::string tag) : fanout(limits, std::move(tag)) {}
 
     TranscodedSource* owner = nullptr;
     GstElement* pipeline = nullptr;
@@ -48,12 +47,15 @@ struct TranscodedSource::Impl {
     // publishes starts at zero like the one it wraps.
     GstClockTime outBase = GST_CLOCK_TIME_NONE;
 
-    // Guards the consumer map and the feed. Same discipline as everywhere else
-    // that pushes into an appsrc from another pipeline's thread: `enabled` under
-    // the lock is what makes teardown safe rather than merely unlikely.
-    mutable std::mutex mutex;
-    std::map<std::uint64_t, Consumer> consumers;
-    std::uint64_t nextId = 1;
+    // The consumers of this transcode, with the GOP that starts a new one at
+    // once. It carries its own lock.
+    SinkFanout fanout;
+
+    // Guards the FEED — the push side into this pipeline's appsrc. Same
+    // discipline as everywhere else that pushes into an appsrc from another
+    // pipeline's thread: `feeding` under the lock is what makes teardown safe
+    // rather than merely unlikely.
+    std::mutex mutex;
     bool feeding = false;
     bool capsSet = false;
     // The first upstream timestamp, so this pipeline's timeline starts at zero.
@@ -142,19 +144,7 @@ void TranscodedSource::Impl::deliver(GstSample* sample) {
                          static_cast<std::uint64_t>(nowUs - rateSinceUs));
     }
 
-    std::vector<Sink> targets;
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        targets.reserve(consumers.size());
-        for (auto& [id, consumer] : consumers) {
-            if (consumer.waitingForKeyframe) {
-                if (!keyframe) continue;
-                consumer.waitingForKeyframe = false;
-            }
-            targets.push_back(consumer.sink);
-        }
-    }
-    for (const Sink& sink : targets) sink(stamped, caps);
+    fanout.deliver(stamped, caps, keyframe);
     if (owned) gst_buffer_unref(owned);
 }
 
@@ -193,7 +183,7 @@ TranscodedSource::TranscodedSource(std::string cameraId,
     : m_cameraId(std::move(cameraId)),
       m_upstream(std::move(upstream)),
       m_options(options),
-      m_impl(std::make_unique<Impl>()) {
+      m_impl(std::make_unique<Impl>(m_options.gopCache, m_cameraId + " (h264)")) {
     m_impl->owner = this;
 }
 
@@ -352,17 +342,11 @@ void TranscodedSource::stop() {
     }
 }
 
-std::uint64_t TranscodedSource::addSink(Sink sink) {
-    std::lock_guard<std::mutex> lock(m_impl->mutex);
-    const std::uint64_t id = m_impl->nextId++;
-    m_impl->consumers.emplace(id, Impl::Consumer{std::move(sink), true});
-    return id;
+std::uint64_t TranscodedSource::addSink(Sink sink, SinkOptions options) {
+    return m_impl->fanout.add(std::move(sink), options);
 }
 
-void TranscodedSource::removeSink(std::uint64_t id) {
-    std::lock_guard<std::mutex> lock(m_impl->mutex);
-    m_impl->consumers.erase(id);
-}
+void TranscodedSource::removeSink(std::uint64_t id) { m_impl->fanout.remove(id); }
 
 // Dead when either end is: a transcode of a source that has gone is not a
 // stream, it is a pipeline waiting for buffers that will not arrive.

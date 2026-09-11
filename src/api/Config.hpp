@@ -35,6 +35,13 @@ struct StreamConfig {
     std::uint32_t retryInitialMs = 1000;
     std::uint32_t retryMaxMs = 30000;
     int sourceLatencyMs = 300;
+
+    // Keep the current group of pictures per camera, so a viewer opening a tile
+    // sees one immediately instead of waiting for the next keyframe — 1 to 2
+    // seconds on a typical camera. Off trades that first picture for the lowest
+    // latency, which is the tradeoff SRS names in one line: "set to off for min
+    // delay".
+    bool gopCache = true;
     std::string recordingDir = "recordings";
     std::string motionSnapshotDir = "motion-snapshots";
 

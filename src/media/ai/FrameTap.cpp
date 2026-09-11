@@ -227,8 +227,13 @@ core::Status FrameTap::start() {
         std::lock_guard<std::mutex> lock(m_impl->pushMutex);
         m_impl->enabled = true;
     }
+    // No GOP priming. The analyser samples a few frames a second on purpose,
+    // and replaying two seconds of cached video into it means a decode burst and
+    // NPU work to produce detections for a moment that has already passed. It
+    // starts at the next keyframe, as it always did.
     m_impl->sourceSinkId = m_source->addSink(
-        [impl = m_impl.get()](GstBuffer* buffer, GstCaps* caps) { impl->push(buffer, caps); });
+        [impl = m_impl.get()](GstBuffer* buffer, GstCaps* caps) { impl->push(buffer, caps); },
+        SinkOptions{/*primeFromGop=*/false});
     m_impl->running.store(true);
 
     VS_INFO(kCategory) << m_cameraId << ": decoding for AI ("

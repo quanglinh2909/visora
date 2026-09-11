@@ -188,6 +188,7 @@ int main(int argc, char** argv) {
         // simultaneous streams, so this is a constraint rather than a saving.
         media::RtspSourceOptions sourceOptions;
         sourceOptions.latencyMs = config.value().stream.sourceLatencyMs;
+        sourceOptions.gopCache.enabled = config.value().stream.gopCache;
         auto sources = std::make_shared<media::CameraSourceRegistry>(sourceOptions);
 
         auto recordingRepository = repositories.recordings;

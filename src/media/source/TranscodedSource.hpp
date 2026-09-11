@@ -27,6 +27,7 @@
 
 #include "core/Result.hpp"
 #include "media/source/EncodedSource.hpp"
+#include "media/source/SinkFanout.hpp"
 
 namespace visora::media {
 
@@ -39,6 +40,10 @@ struct TranscodeOptions {
     // -1 follows the input's own keyframes. A GOP imposed here would mean a
     // viewer joining waits for OUR keyframe rather than the camera's.
     int gopSize = -1;
+
+    // The transcode caches its own GOP, because its consumers are H.264 viewers
+    // that would otherwise wait for the NEXT re-encoded keyframe.
+    GopCacheLimits gopCache;
 };
 
 class TranscodedSource final : public EncodedSource {
@@ -53,7 +58,7 @@ public:
     core::Status start();
     void stop();
 
-    std::uint64_t addSink(Sink sink) override;
+    std::uint64_t addSink(Sink sink, SinkOptions options = {}) override;
     void removeSink(std::uint64_t id) override;
     bool alive() const override;
     Codec codec() const override { return Codec::H264; }

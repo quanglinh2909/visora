@@ -61,6 +61,15 @@ void readString(const oatpp::Fields<oatpp::Any>& fields, const char* name, std::
     if (tryRetrieve(*value, text)) out = *text;
 }
 
+void readBool(const oatpp::Fields<oatpp::Any>& fields, const char* name, bool& out) {
+    const oatpp::Any* value = find(fields, name);
+    if (value == nullptr) return;
+    oatpp::Boolean flag;
+    // getPtr(), not `if (flag)`: an oatpp wrapper's operator bool returns the
+    // VALUE, so a configured `false` would read as "not present".
+    if (tryRetrieve(*value, flag) && flag.getPtr() != nullptr) out = *flag;
+}
+
 // Accepts whichever numeric type the parser chose.
 template <class T>
 void readInt(const oatpp::Fields<oatpp::Any>& fields, const char* name, T& out) {
@@ -153,6 +162,7 @@ core::Result<Config> loadConfig(const std::string& path) {
         readInt(*stream, "retryInitialMs", config.stream.retryInitialMs);
         readInt(*stream, "retryMaxMs", config.stream.retryMaxMs);
         readInt(*stream, "sourceLatencyMs", config.stream.sourceLatencyMs);
+        readBool(*stream, "gopCache", config.stream.gopCache);
         readString(*stream, "recordingDir", config.stream.recordingDir);
         readString(*stream, "motionSnapshotDir", config.stream.motionSnapshotDir);
         readString(*stream, "stunServer", config.stream.stunServer);

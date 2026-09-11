@@ -64,7 +64,12 @@ core::Result<std::shared_ptr<EncodedSource>> CameraSourceRegistry::acquireH264(
         if (held->alive()) return std::static_pointer_cast<EncodedSource>(held);
     }
 
-    auto transcode = std::make_shared<TranscodedSource>(cameraId, raw.value());
+    // The transcode inherits the deployment's GOP-cache setting: its consumers
+    // are viewers, and turning the cache off for the camera while leaving it on
+    // for the re-encode would be a setting that only half applies.
+    TranscodeOptions transcodeOptions;
+    transcodeOptions.gopCache = m_options.gopCache;
+    auto transcode = std::make_shared<TranscodedSource>(cameraId, raw.value(), transcodeOptions);
     const core::Status started = transcode->start();
     if (!started.ok()) return started.error();
     m_transcodes[cameraId] = transcode;
