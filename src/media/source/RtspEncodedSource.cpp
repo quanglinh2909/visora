@@ -1,6 +1,7 @@
 #include "media/source/RtspEncodedSource.hpp"
 
 #include "media/source/SinkFanout.hpp"
+#include "media/source/Timeline.hpp"
 
 #include <algorithm>
 #include <vector>
@@ -56,6 +57,8 @@ struct RtspEncodedSource::Impl {
     gint64 reportedAtUs = 0;
 
     SinkFanout fanout;
+    // Touched only by the appsink thread, which is the only thread in deliver().
+    Timeline timeline;
 
     void deliver(GstSample* sample);
 };
@@ -139,7 +142,36 @@ void RtspEncodedSource::Impl::deliver(GstSample* sample) {
         }
     }
 
-    fanout.deliver(buffer, caps, keyframe);
+    // Correct the camera's clock ONCE, here, so every consumer downstream sees
+    // one timeline that starts at zero and only moves forward. Each of them
+    // used to rebase for itself, which is how the same bug appeared twice in
+    // two different places.
+    Timeline::Stamps in;
+    in.pts = GST_BUFFER_PTS_IS_VALID(buffer) ? static_cast<std::int64_t>(GST_BUFFER_PTS(buffer))
+                                             : Timeline::kNone;
+    in.dts = GST_BUFFER_DTS_IS_VALID(buffer) ? static_cast<std::int64_t>(GST_BUFFER_DTS(buffer))
+                                             : Timeline::kNone;
+    const std::uint64_t before = timeline.corrections();
+    const Timeline::Stamps out = timeline.correct(in);
+    if (timeline.corrections() != before) {
+        VS_WARN(kCategory) << owner->m_cameraId << ": camera clock jumped; absorbed ("
+                           << timeline.corrections() << " so far)";
+    }
+
+    // A shallow copy — it shares the payload, so this costs a struct — because
+    // the buffer belongs to the appsink and is about to be handed to consumers
+    // that must all see the same corrected stamps.
+    GstBuffer* stamped = buffer;
+    GstBuffer* owned = nullptr;
+    if (out.pts != in.pts || out.dts != in.dts) {
+        owned = gst_buffer_make_writable(gst_buffer_ref(buffer));
+        if (out.pts != Timeline::kNone) GST_BUFFER_PTS(owned) = static_cast<GstClockTime>(out.pts);
+        if (out.dts != Timeline::kNone) GST_BUFFER_DTS(owned) = static_cast<GstClockTime>(out.dts);
+        stamped = owned;
+    }
+
+    fanout.deliver(stamped, caps, keyframe);
+    if (owned) gst_buffer_unref(owned);
 }
 
 RtspEncodedSource::RtspEncodedSource(std::string cameraId, std::string rtspUrl, Codec codec,

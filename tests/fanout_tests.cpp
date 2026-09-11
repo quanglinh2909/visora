@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <gst/gst.h>
@@ -17,6 +18,7 @@
 #include "media/source/BackPressure.hpp"
 #include "media/source/IdleRetirement.hpp"
 #include "media/source/SinkFanout.hpp"
+#include "media/source/Timeline.hpp"
 
 using namespace visora;
 using visora::media::SinkFanout;
@@ -348,6 +350,98 @@ VS_TEST(every_dropped_frame_is_counted) {
     VS_CHECK_EQ(gate.dropped(), static_cast<std::uint64_t>(3));
     VS_CHECK(gate.admit(true, false));
     VS_CHECK_EQ(gate.dropped(), static_cast<std::uint64_t>(3));
+}
+
+
+// --- a camera's clock ---------------------------------------------------------
+
+namespace {
+constexpr std::int64_t kFrame = 40'000'000;  // 1/25 s in ns
+}
+
+VS_TEST(a_stream_starts_at_zero_however_the_camera_numbers_it) {
+    // SRS: "ensure stream start at zero". A camera that has been up for a month
+    // hands over enormous stamps, and every consumer downstream believes them.
+    media::Timeline timeline;
+    const std::int64_t base = 1'234'567'890'000'000LL;
+
+    auto first = timeline.correct({base, base});
+    VS_CHECK_EQ(first.pts, static_cast<std::int64_t>(0));
+    VS_CHECK_EQ(first.dts, static_cast<std::int64_t>(0));
+
+    auto second = timeline.correct({base + kFrame, base + kFrame});
+    VS_CHECK_EQ(second.pts, kFrame);
+}
+
+VS_TEST(a_camera_that_restarts_its_clock_does_not_drag_the_timeline_with_it) {
+    // The failure this exists for: a reconnecting camera begins numbering again
+    // from near zero, and everything downstream either jumps backward or stops.
+    media::Timeline timeline;
+    std::int64_t at = 5'000'000'000LL;
+    for (int i = 0; i < 10; ++i) {
+        timeline.correct({at, at});
+        at += kFrame;
+    }
+    const auto beforeJump = timeline.correct({at, at});
+
+    // The camera restarts: its clock returns to zero.
+    const auto afterJump = timeline.correct({0, 0});
+    VS_CHECK(afterJump.dts > beforeJump.dts);
+    // And it continues by one frame, not by minus five seconds.
+    VS_CHECK_EQ(afterJump.dts - beforeJump.dts, kFrame);
+    VS_CHECK_EQ(timeline.corrections(), static_cast<std::uint64_t>(1));
+}
+
+VS_TEST(a_jump_further_ahead_than_three_seconds_is_a_jump_not_a_gap) {
+    // ZLMediaKit's MAX_DELTA_STAMP. A real stall is shorter than this; a camera
+    // whose NTP sync lands mid-stream is not.
+    media::Timeline timeline;
+    timeline.correct({0, 0});
+    const auto before = timeline.correct({kFrame, kFrame});
+
+    const auto after = timeline.correct({kFrame + 3'600'000'000'000LL,
+                                          kFrame + 3'600'000'000'000LL});
+    VS_CHECK_EQ(after.dts - before.dts, kFrame);
+    VS_CHECK_EQ(timeline.corrections(), static_cast<std::uint64_t>(1));
+}
+
+VS_TEST(a_gap_shorter_than_the_threshold_is_preserved) {
+    // Not everything unusual is wrong. A two-second network stall really did
+    // happen, and flattening it would put every later stamp two seconds early.
+    media::Timeline timeline;
+    timeline.correct({0, 0});
+    const auto after = timeline.correct({2'000'000'000LL, 2'000'000'000LL});
+    VS_CHECK_EQ(after.dts, static_cast<std::int64_t>(2'000'000'000LL));
+    VS_CHECK_EQ(timeline.corrections(), static_cast<std::uint64_t>(0));
+}
+
+VS_TEST(b_frames_keep_their_relationship_between_pts_and_dts) {
+    // The reason this corrects by OFFSET rather than rewriting stamps. With
+    // B-frames, PTS runs ahead of DTS by a varying amount, and that gap IS the
+    // display order. Recomputing PTS would destroy it; shifting both by the
+    // same number cannot.
+    media::Timeline timeline;
+    const std::int64_t base = 90'000'000'000LL;
+    const std::pair<std::int64_t, std::int64_t> stream[] = {
+        {base + 0 * kFrame, base + 0 * kFrame},
+        {base + 3 * kFrame, base + 1 * kFrame},
+        {base + 1 * kFrame, base + 2 * kFrame},
+        {base + 2 * kFrame, base + 3 * kFrame},
+    };
+    for (const auto& [pts, dts] : stream) {
+        const auto out = timeline.correct({pts, dts});
+        VS_CHECK_EQ(out.pts - out.dts, pts - dts);
+    }
+    // And a stream that merely has B-frames is not a stream with a problem.
+    VS_CHECK_EQ(timeline.corrections(), static_cast<std::uint64_t>(0));
+}
+
+VS_TEST(a_buffer_with_no_stamps_is_left_alone) {
+    // A consumer can recognise "no timestamp". It cannot recognise a wrong one.
+    media::Timeline timeline;
+    const auto out = timeline.correct({media::Timeline::kNone, media::Timeline::kNone});
+    VS_CHECK_EQ(out.pts, media::Timeline::kNone);
+    VS_CHECK_EQ(out.dts, media::Timeline::kNone);
 }
 
 
